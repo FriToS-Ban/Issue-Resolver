@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fix-issue"
 version = "0.1.0"
-description = "Autonomous GitHub Issue Resolution Agent — fetches, triages, patches, and PRs."
+description = "Autonomous GitHub Issue Resolver — fetches, triages, patches, and PRs."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -37,8 +37,8 @@ dev = [
 fix-issue = "fix_issue.cli:main"
 
 [project.urls]
-"Homepage" = "https://github.com/your-org/fix-issue"
-"Bug Tracker" = "https://github.com/your-org/fix-issue/issues"
+"Homepage" = "https://github.com/FriToS-Ban/Issue-Resolver"
+"Bug Tracker" = "https://github.com/FriToS-Ban/Issue-Resolver/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

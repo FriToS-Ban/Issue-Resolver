@@ -1,4 +1,4 @@
-# fix-issue
+# Autonomous GitHub Issue Resolver
 
 **Autonomous GitHub Issue Resolution Agent**
 
@@ -58,8 +58,8 @@ fix-issue owner/repo 123
 
 ```bash
 # Clone this repo
-git clone https://github.com/your-org/fix-issue
-cd fix-issue
+git clone https://github.com/FriToS-Ban/Issue-Resolver.git
+cd Issue-Resolver
 
 # Install (editable, with dev tools)
 pip install -e ".[dev]"
