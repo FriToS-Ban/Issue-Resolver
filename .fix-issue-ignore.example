@@ -1,0 +1,38 @@
+# .fix-issue-ignore
+#
+# Paths the fix-issue agent must NEVER touch in this repo.
+# Uses .gitignore-style glob patterns (via Python fnmatch).
+# Check this file into version control — it's visible to anyone reviewing agent PRs.
+#
+# -----------------------------------------------------------------------
+# Examples — uncomment and adapt:
+# -----------------------------------------------------------------------
+
+# Security-sensitive paths
+# auth/**
+# oauth/**
+# **/tokens.py
+
+# Payment processing
+# payments/**
+# billing/**
+# stripe/**
+
+# Database migrations (auto-generated — never hand-edit)
+# **/migrations/**
+# **/alembic/**
+
+# CI/CD configuration
+# .github/workflows/**
+# .circleci/**
+# Jenkinsfile
+
+# Dependency lock files
+# poetry.lock
+# package-lock.json
+# Pipfile.lock
+
+# Compiled / generated output
+# dist/**
+# build/**
+# *.min.js

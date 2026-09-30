@@ -1,0 +1,41 @@
+# ~/.fix-issue.toml — Personal defaults for fix-issue
+#
+# This file lives in your home directory.
+# Personal secrets (tokens, API keys) belong HERE — not in a repo-committed file.
+# Copy this to ~/.fix-issue.toml and fill in your values.
+#
+# Per-repo scope rules belong in .fix-issue-ignore (checked into the target repo).
+
+[llm]
+# Provider: anthropic | openai_compatible | gemini
+provider = "anthropic"
+
+# API key for the selected provider
+api_key = ""
+
+# Base URL — only needed for openai_compatible
+# Leave blank to use https://api.openai.com/v1 (OpenAI default)
+# Ollama: http://localhost:11434/v1
+# NVIDIA NIM: https://integrate.api.nvidia.com/v1
+base_url = ""
+
+# Model name (must match the provider's model ID)
+model = "claude-opus-4-5"
+
+[github]
+# Personal access token with repo + pull_request scopes
+token = ""
+
+[limits]
+# Maximum number of ±-prefixed lines the generated diff may contain.
+# Diffs over this limit are rejected BEFORE any test run.
+max_diff_lines = 150
+
+# Maximum number of patch-generate / apply / test cycles per issue.
+max_retries = 3
+
+# Maximum number of files passed as context to the LLM.
+relevant_files = 5
+
+# Seconds before the test suite run is killed.
+test_timeout_seconds = 300
