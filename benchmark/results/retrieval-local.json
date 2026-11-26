@@ -1,0 +1,1686 @@
+{
+  "summary": {
+    "keyword": {
+      "n": 20,
+      "recall@1": 0.25,
+      "recall@3": 0.7,
+      "recall@5": 0.825,
+      "mrr": 0.499,
+      "all_found": 0.8,
+      "symbol_recall": 0.0,
+      "mean_files_returned": 5.0,
+      "mean_context_chars": 13923.7,
+      "errors": 0,
+      "recall@5_easy": 1.0,
+      "recall@5_medium": 0.571,
+      "recall@5_hard": 0.875
+    },
+    "layered-noembed": {
+      "n": 20,
+      "recall@1": 0.6,
+      "recall@3": 0.8,
+      "recall@5": 0.925,
+      "mrr": 0.713,
+      "all_found": 0.9,
+      "symbol_recall": 0.692,
+      "mean_files_returned": 3.25,
+      "mean_context_chars": 11452.75,
+      "errors": 0,
+      "recall@5_easy": 1.0,
+      "recall@5_medium": 0.857,
+      "recall@5_hard": 0.875
+    },
+    "layered-local": {
+      "n": 20,
+      "recall@1": 0.6,
+      "recall@3": 0.8,
+      "recall@5": 0.925,
+      "mrr": 0.713,
+      "all_found": 0.9,
+      "symbol_recall": 0.642,
+      "mean_files_returned": 3.2,
+      "mean_context_chars": 11223.7,
+      "errors": 0,
+      "recall@5_easy": 1.0,
+      "recall@5_medium": 0.857,
+      "recall@5_hard": 0.875
+    }
+  },
+  "cases": [
+    {
+      "case_id": "shopcart-e1-shipping-boundary",
+      "difficulty": "easy",
+      "expected_files": [
+        "shopcart/shipping.py"
+      ],
+      "expected_symbols": [
+        "tier_price_cents"
+      ],
+      "keyword": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.16,
+        "context_chars": 14749,
+        "ranked": [
+          "shopcart/shipping.py",
+          "shopcart/checkout.py",
+          "README.md",
+          "tests/test_shipping.py",
+          "tests/test_checkout.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/shipping.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 2,
+        "symbol_recall": 0.0,
+        "seconds": 0.12,
+        "context_chars": 9110,
+        "ranked": [
+          "shopcart/shipping.py",
+          "shopcart/checkout.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/shipping.py": [
+            "file named in the issue text",
+            "defines `shipping_cost_cents` (mentioned in issue)",
+            "lexical match on parcel, page, info, tier, cost, limit (BM25 1.00)"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 2,
+        "symbol_recall": 0.0,
+        "seconds": 0.41,
+        "context_chars": 9144,
+        "ranked": [
+          "shopcart/shipping.py",
+          "shopcart/checkout.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/shipping.py": [
+            "file named in the issue text",
+            "defines `shipping_cost_cents` (mentioned in issue)",
+            "lexical match on parcel, page, info, tier, cost, limit (BM25 1.00)"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "shopcart-e2-negative-money-format",
+      "difficulty": "easy",
+      "expected_files": [
+        "shopcart/utils/money.py"
+      ],
+      "expected_symbols": [
+        "format_money"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.5,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.09,
+        "context_chars": 18539,
+        "ranked": [
+          "shopcart/checkout.py",
+          "shopcart/utils/money.py",
+          "shopcart/reports.py",
+          "tests/test_checkout.py",
+          "shopcart/payments/gateway.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/utils/money.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 1,
+        "symbol_recall": 1.0,
+        "seconds": 0.12,
+        "context_chars": 3838,
+        "ranked": [
+          "shopcart/utils/money.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/utils/money.py": [
+            "file named in the issue text",
+            "defines `format_money` (mentioned in issue)",
+            "lexical match on symbol, format_mone, dollar, receipt, amount, format (BM25 1.00)"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 1,
+        "symbol_recall": 1.0,
+        "seconds": 0.41,
+        "context_chars": 3868,
+        "ranked": [
+          "shopcart/utils/money.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/utils/money.py": [
+            "file named in the issue text",
+            "defines `format_money` (mentioned in issue)",
+            "lexical match on symbol, format_mone, dollar, receipt, amount, format (BM25 1.00)"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "shopcart-e3-unknown-sku-keyerror",
+      "difficulty": "easy",
+      "expected_files": [
+        "shopcart/inventory.py"
+      ],
+      "expected_symbols": [
+        "Inventory.available"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.5,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.09,
+        "context_chars": 18974,
+        "ranked": [
+          "shopcart/checkout.py",
+          "shopcart/inventory.py",
+          "tests/test_checkout.py",
+          "shopcart/reports.py",
+          "README.md"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/inventory.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 3,
+        "symbol_recall": 1.0,
+        "seconds": 0.12,
+        "context_chars": 12818,
+        "ranked": [
+          "shopcart/inventory.py",
+          "shopcart/models.py",
+          "shopcart/discounts.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/inventory.py": [
+            "stack trace frame: line 54 in available()",
+            "defines `Inventory.available` (mentioned in issue)",
+            "defines `Inventory` (mentioned in issue)"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 3,
+        "symbol_recall": 1.0,
+        "seconds": 0.41,
+        "context_chars": 12818,
+        "ranked": [
+          "shopcart/inventory.py",
+          "shopcart/models.py",
+          "shopcart/discounts.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/inventory.py": [
+            "stack trace frame: line 54 in available()",
+            "defines `Inventory.available` (mentioned in issue)",
+            "defines `Inventory` (mentioned in issue)"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "shopcart-h1-reservation-leak-on-payment-failure",
+      "difficulty": "hard",
+      "expected_files": [
+        "shopcart/checkout.py"
+      ],
+      "expected_symbols": [
+        "Checkout.place_order",
+        "Checkout._release_all",
+        "Inventory.release"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.5,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.09,
+        "context_chars": 18046,
+        "ranked": [
+          "tests/test_checkout.py",
+          "shopcart/checkout.py",
+          "shopcart/payments/gateway.py",
+          "README.md",
+          "shopcart/inventory.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/checkout.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.3333333333333333,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.3333333333333333,
+        "seconds": 0.12,
+        "context_chars": 21502,
+        "ranked": [
+          "shopcart/payments/gateway.py",
+          "shopcart/inventory.py",
+          "shopcart/checkout.py",
+          "shopcart/models.py",
+          "shopcart/discounts.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/checkout.py": [
+            "defines `Checkout.place_order` (mentioned in issue)",
+            "defines `Checkout` (mentioned in issue)",
+            "defines `Order` (mentioned in issue)"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.3333333333333333,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.3333333333333333,
+        "seconds": 0.41,
+        "context_chars": 21502,
+        "ranked": [
+          "shopcart/payments/gateway.py",
+          "shopcart/inventory.py",
+          "shopcart/checkout.py",
+          "shopcart/models.py",
+          "shopcart/discounts.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/checkout.py": [
+            "defines `Checkout.place_order` (mentioned in issue)",
+            "defines `Checkout` (mentioned in issue)",
+            "defines `Order` (mentioned in issue)"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "shopcart-h2-cent-rounding-line-items",
+      "difficulty": "hard",
+      "expected_files": [
+        "shopcart/pricing.py",
+        "shopcart/utils/money.py"
+      ],
+      "expected_symbols": [
+        "subtotal_cents",
+        "line_total_cents",
+        "to_cents"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 0.0,
+        "recall@5": 0.5,
+        "mrr": 0.2,
+        "all_found": false,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.09,
+        "context_chars": 18150,
+        "ranked": [
+          "shopcart/checkout.py",
+          "tests/test_checkout.py",
+          "shopcart/reports.py",
+          "README.md",
+          "shopcart/pricing.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/pricing.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 0.0,
+        "recall@3": 0.0,
+        "recall@5": 0.5,
+        "mrr": 0.2,
+        "all_found": false,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.12,
+        "context_chars": 19719,
+        "ranked": [
+          "shopcart/payments/gateway.py",
+          "shopcart/inventory.py",
+          "shopcart/models.py",
+          "shopcart/checkout.py",
+          "shopcart/utils/money.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/utils/money.py": [
+            "defines `format_money` (mentioned in issue)",
+            "lexical match on binar, exactl, format_mone, whole, half, place (BM25 0.75)",
+            "imported by shopcart/checkout.py"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 0.0,
+        "recall@3": 0.0,
+        "recall@5": 0.5,
+        "mrr": 0.2,
+        "all_found": false,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.41,
+        "context_chars": 19719,
+        "ranked": [
+          "shopcart/payments/gateway.py",
+          "shopcart/inventory.py",
+          "shopcart/checkout.py",
+          "shopcart/models.py",
+          "shopcart/utils/money.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/utils/money.py": [
+            "defines `format_money` (mentioned in issue)",
+            "lexical match on binar, exactl, format_mone, whole, half, place (BM25 0.75)",
+            "n-gram vector similarity 0.13 (local-ngram-768) via `from_cents`"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "shopcart-m1-tax-after-discount",
+      "difficulty": "medium",
+      "expected_files": [
+        "shopcart/checkout.py"
+      ],
+      "expected_symbols": [
+        "Checkout.quote",
+        "tax_cents"
+      ],
+      "keyword": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.09,
+        "context_chars": 18112,
+        "ranked": [
+          "shopcart/checkout.py",
+          "tests/test_checkout.py",
+          "README.md",
+          "shopcart/pricing.py",
+          "shopcart/reports.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/checkout.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 0.0,
+        "recall@3": 0.0,
+        "recall@5": 1.0,
+        "mrr": 0.2,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 1.0,
+        "seconds": 0.12,
+        "context_chars": 20632,
+        "ranked": [
+          "shopcart/payments/gateway.py",
+          "shopcart/discounts.py",
+          "shopcart/inventory.py",
+          "shopcart/pricing.py",
+          "shopcart/checkout.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/checkout.py": [
+            "defines `Checkout.place_order` (mentioned in issue)",
+            "defines `Checkout.quote` (mentioned in issue)",
+            "defines `Checkout` (mentioned in issue)"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 0.0,
+        "recall@3": 0.0,
+        "recall@5": 1.0,
+        "mrr": 0.2,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 1.0,
+        "seconds": 0.44,
+        "context_chars": 20632,
+        "ranked": [
+          "shopcart/discounts.py",
+          "shopcart/payments/gateway.py",
+          "shopcart/inventory.py",
+          "shopcart/pricing.py",
+          "shopcart/checkout.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/checkout.py": [
+            "defines `Checkout.place_order` (mentioned in issue)",
+            "defines `Checkout.quote` (mentioned in issue)",
+            "defines `Checkout` (mentioned in issue)"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "shopcart-m2-expired-coupon-accepted",
+      "difficulty": "medium",
+      "expected_files": [
+        "shopcart/utils/dates.py"
+      ],
+      "expected_symbols": [
+        "is_expired"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 0.0,
+        "recall@5": 0.0,
+        "mrr": 0.0,
+        "all_found": false,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.09,
+        "context_chars": 17896,
+        "ranked": [
+          "shopcart/checkout.py",
+          "tests/test_checkout.py",
+          "shopcart/discounts.py",
+          "README.md",
+          "tests/test_discounts.py"
+        ],
+        "error": null,
+        "reasons": {}
+      },
+      "layered-noembed": {
+        "recall@1": 0.0,
+        "recall@3": 0.0,
+        "recall@5": 0.0,
+        "mrr": 0.0,
+        "all_found": false,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.14,
+        "context_chars": 20675,
+        "ranked": [
+          "shopcart/discounts.py",
+          "shopcart/payments/gateway.py",
+          "shopcart/inventory.py",
+          "shopcart/checkout.py",
+          "shopcart/pricing.py"
+        ],
+        "error": null,
+        "reasons": {}
+      },
+      "layered-local": {
+        "recall@1": 0.0,
+        "recall@3": 0.0,
+        "recall@5": 0.0,
+        "mrr": 0.0,
+        "all_found": false,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.41,
+        "context_chars": 20675,
+        "ranked": [
+          "shopcart/discounts.py",
+          "shopcart/payments/gateway.py",
+          "shopcart/inventory.py",
+          "shopcart/checkout.py",
+          "shopcart/pricing.py"
+        ],
+        "error": null,
+        "reasons": {}
+      }
+    },
+    {
+      "case_id": "shopcart-m3-manager-discount-limit",
+      "difficulty": "medium",
+      "expected_files": [
+        "shopcart/auth/permissions.py"
+      ],
+      "expected_symbols": [
+        "can_apply_discount"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.5,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.09,
+        "context_chars": 15432,
+        "ranked": [
+          "shopcart/checkout.py",
+          "shopcart/auth/permissions.py",
+          "tests/test_checkout.py",
+          "tests/test_permissions.py",
+          "README.md"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/auth/permissions.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 2,
+        "symbol_recall": 0.0,
+        "seconds": 0.12,
+        "context_chars": 9783,
+        "ranked": [
+          "shopcart/auth/permissions.py",
+          "shopcart/checkout.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/auth/permissions.py": [
+            "stack trace frame: line 66 in require_discount()",
+            "defines `PermissionDenied` (mentioned in issue)",
+            "defines `User` (mentioned in issue)"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 3,
+        "symbol_recall": 0.0,
+        "seconds": 0.42,
+        "context_chars": 10126,
+        "ranked": [
+          "shopcart/auth/permissions.py",
+          "shopcart/checkout.py",
+          "shopcart/auth/__init__.py"
+        ],
+        "error": null,
+        "reasons": {
+          "shopcart/auth/permissions.py": [
+            "stack trace frame: line 66 in require_discount()",
+            "defines `PermissionDenied` (mentioned in issue)",
+            "defines `User` (mentioned in issue)"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "taskq-e1-interval-seconds-unit",
+      "difficulty": "easy",
+      "expected_files": [
+        "taskq/schedule.py"
+      ],
+      "expected_symbols": [
+        "parse_interval"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.5,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.11,
+        "context_chars": 14373,
+        "ranked": [
+          "tests/test_schedule.py",
+          "taskq/schedule.py",
+          "tests/test_worker.py",
+          "taskq/worker.py",
+          "README.md"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/schedule.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 1,
+        "symbol_recall": 1.0,
+        "seconds": 0.09,
+        "context_chars": 5570,
+        "ranked": [
+          "taskq/schedule.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/schedule.py": [
+            "file named in the issue text",
+            "defines `parse_interval` (mentioned in issue)",
+            "lexical match on sec, hour, parse_interval, interval, parse, schedule (BM25 0.96)"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 1,
+        "symbol_recall": 1.0,
+        "seconds": 0.27,
+        "context_chars": 5600,
+        "ranked": [
+          "taskq/schedule.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/schedule.py": [
+            "file named in the issue text",
+            "defines `parse_interval` (mentioned in issue)",
+            "lexical match on sec, hour, parse_interval, interval, parse, schedule (BM25 0.96)"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "taskq-e2-backoff-max-cap",
+      "difficulty": "easy",
+      "expected_files": [
+        "taskq/retry.py"
+      ],
+      "expected_symbols": [
+        "backoff_delay"
+      ],
+      "keyword": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.06,
+        "context_chars": 12408,
+        "ranked": [
+          "taskq/retry.py",
+          "tests/test_retry.py",
+          "taskq/worker.py",
+          "tests/test_worker.py",
+          "README.md"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/retry.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 1,
+        "symbol_recall": 1.0,
+        "seconds": 0.08,
+        "context_chars": 3602,
+        "ranked": [
+          "taskq/retry.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/retry.py": [
+            "file named in the issue text",
+            "defines `backoff_delays` (mentioned in issue)",
+            "defines `RetryPolicy` (mentioned in issue)"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 1,
+        "symbol_recall": 0.0,
+        "seconds": 0.27,
+        "context_chars": 3629,
+        "ranked": [
+          "taskq/retry.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/retry.py": [
+            "file named in the issue text",
+            "defines `backoff_delays` (mentioned in issue)",
+            "defines `RetryPolicy` (mentioned in issue)"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "taskq-e3-from-dict-missing-tags",
+      "difficulty": "easy",
+      "expected_files": [
+        "taskq/task.py"
+      ],
+      "expected_symbols": [
+        "Task.from_dict"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.5,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.05,
+        "context_chars": 14148,
+        "ranked": [
+          "taskq/api.py",
+          "taskq/task.py",
+          "taskq/worker.py",
+          "tests/test_api.py",
+          "taskq/storage.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/task.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 4,
+        "symbol_recall": 1.0,
+        "seconds": 0.09,
+        "context_chars": 12742,
+        "ranked": [
+          "taskq/task.py",
+          "taskq/api.py",
+          "taskq/storage.py",
+          "taskq/queue.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/task.py": [
+            "stack trace frame: line 76 in from_dict()",
+            "defines `Task` (mentioned in issue)",
+            "defines `Task.from_dict` (mentioned in issue)"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 4,
+        "symbol_recall": 1.0,
+        "seconds": 0.27,
+        "context_chars": 12756,
+        "ranked": [
+          "taskq/task.py",
+          "taskq/api.py",
+          "taskq/storage.py",
+          "taskq/queue.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/task.py": [
+            "stack trace frame: line 76 in from_dict()",
+            "defines `Task` (mentioned in issue)",
+            "defines `Task.from_dict` (mentioned in issue)"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "taskq-h1-nested-config-defaults",
+      "difficulty": "hard",
+      "expected_files": [
+        "taskq/config.py"
+      ],
+      "expected_symbols": [
+        "load_config",
+        "merge"
+      ],
+      "keyword": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.06,
+        "context_chars": 13258,
+        "ranked": [
+          "taskq/config.py",
+          "taskq/worker.py",
+          "README.md",
+          "tests/test_worker.py",
+          "taskq/retry.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/config.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.5,
+        "all_found": true,
+        "returned": 4,
+        "symbol_recall": 0.5,
+        "seconds": 0.09,
+        "context_chars": 13849,
+        "ranked": [
+          "taskq/retry.py",
+          "taskq/config.py",
+          "taskq/worker.py",
+          "taskq/api.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/config.py": [
+            "file named in the issue text",
+            "defines `load_config` (mentioned in issue)",
+            "lexical match on copy, anyth, sett, overrid, toml, configur (BM25 1.00)"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.5,
+        "all_found": true,
+        "returned": 3,
+        "symbol_recall": 0.5,
+        "seconds": 0.28,
+        "context_chars": 12138,
+        "ranked": [
+          "taskq/retry.py",
+          "taskq/config.py",
+          "taskq/worker.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/config.py": [
+            "file named in the issue text",
+            "defines `load_config` (mentioned in issue)",
+            "lexical match on copy, anyth, sett, overrid, toml, configur (BM25 1.00)"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "taskq-m1-priority-fifo-ties",
+      "difficulty": "medium",
+      "expected_files": [
+        "taskq/queue.py"
+      ],
+      "expected_symbols": [
+        "TaskQueue.push"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 0.0,
+        "recall@5": 0.0,
+        "mrr": 0.0,
+        "all_found": false,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.06,
+        "context_chars": 15050,
+        "ranked": [
+          "README.md",
+          "tests/test_api.py",
+          "tests/test_worker.py",
+          "taskq/api.py",
+          "taskq/worker.py"
+        ],
+        "error": null,
+        "reasons": {}
+      },
+      "layered-noembed": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.3333333333333333,
+        "all_found": true,
+        "returned": 4,
+        "symbol_recall": 1.0,
+        "seconds": 0.09,
+        "context_chars": 15391,
+        "ranked": [
+          "taskq/api.py",
+          "taskq/worker.py",
+          "taskq/queue.py",
+          "taskq/task.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/queue.py": [
+            "lexical match on equal, order, high, first, priorit, queue (BM25 0.48)",
+            "`TaskService.submit` (taskq/api.py) uses `TaskQueue.push` defined here",
+            "`Worker.run_pending` (taskq/worker.py) uses `TaskQueue.pop` defined here"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.3333333333333333,
+        "all_found": true,
+        "returned": 4,
+        "symbol_recall": 1.0,
+        "seconds": 0.3,
+        "context_chars": 15430,
+        "ranked": [
+          "taskq/api.py",
+          "taskq/worker.py",
+          "taskq/queue.py",
+          "taskq/task.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/queue.py": [
+            "lexical match on equal, order, high, first, priorit, queue (BM25 0.48)",
+            "`TaskService.submit` (taskq/api.py) uses `TaskQueue.push` defined here",
+            "`Worker.run_pending` (taskq/worker.py) uses `TaskQueue.pop` defined here"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "taskq-m2-storage-datetime-roundtrip",
+      "difficulty": "medium",
+      "expected_files": [
+        "taskq/task.py"
+      ],
+      "expected_symbols": [
+        "Task.from_dict"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 0.0,
+        "recall@5": 1.0,
+        "mrr": 0.2,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.06,
+        "context_chars": 15853,
+        "ranked": [
+          "taskq/worker.py",
+          "taskq/api.py",
+          "tests/test_api.py",
+          "tests/test_worker.py",
+          "taskq/task.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/task.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 0.0,
+        "recall@3": 0.0,
+        "recall@5": 1.0,
+        "mrr": 0.2,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.09,
+        "context_chars": 18507,
+        "ranked": [
+          "taskq/api.py",
+          "taskq/worker.py",
+          "taskq/storage.py",
+          "taskq/schedule.py",
+          "taskq/task.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/task.py": [
+            "lexical match on runn, fail, last, next_run, pend, json (BM25 0.33)",
+            "`TaskService.submit` (taskq/api.py) uses `Task` defined here",
+            "`TaskService.restore` (taskq/api.py) uses `TaskStatus` defined here"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 0.0,
+        "recall@3": 0.0,
+        "recall@5": 1.0,
+        "mrr": 0.2,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.28,
+        "context_chars": 18532,
+        "ranked": [
+          "taskq/api.py",
+          "taskq/worker.py",
+          "taskq/storage.py",
+          "taskq/schedule.py",
+          "taskq/task.py"
+        ],
+        "error": null,
+        "reasons": {
+          "taskq/task.py": [
+            "lexical match on runn, fail, last, next_run, pend, json (BM25 0.33)",
+            "`TaskService.submit` (taskq/api.py) uses `Task` defined here",
+            "`TaskService.restore` (taskq/api.py) uses `TaskStatus` defined here"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "textkit-e1-slug-edge-separators",
+      "difficulty": "easy",
+      "expected_files": [
+        "textkit/slug.py"
+      ],
+      "expected_symbols": [
+        "slugify"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 0.0,
+        "recall@5": 1.0,
+        "mrr": 0.25,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.06,
+        "context_chars": 8233,
+        "ranked": [
+          "tests/test_slug.py",
+          "textkit/cli.py",
+          "README.md",
+          "textkit/slug.py",
+          "textkit/__init__.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/slug.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 4,
+        "symbol_recall": 1.0,
+        "seconds": 0.08,
+        "context_chars": 8279,
+        "ranked": [
+          "textkit/slug.py",
+          "textkit/normalize.py",
+          "textkit/cli.py",
+          "textkit/__init__.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/slug.py": [
+            "defines `slugify` (mentioned in issue)",
+            "lexical match on separator, slugif, slug, textkit (BM25 0.40)",
+            "`test_slugify` (tests/test_slug.py) uses `slugify` defined here"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 4,
+        "symbol_recall": 1.0,
+        "seconds": 0.24,
+        "context_chars": 8290,
+        "ranked": [
+          "textkit/slug.py",
+          "textkit/normalize.py",
+          "textkit/cli.py",
+          "textkit/__init__.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/slug.py": [
+            "defines `slugify` (mentioned in issue)",
+            "lexical match on separator, slugif, slug, textkit (BM25 0.40)",
+            "n-gram vector similarity 0.21 (local-ngram-768) via `slugify`"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "textkit-e2-truncate-length",
+      "difficulty": "easy",
+      "expected_files": [
+        "textkit/truncation.py"
+      ],
+      "expected_symbols": [
+        "truncate"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.5,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.06,
+        "context_chars": 8306,
+        "ranked": [
+          "tests/test_truncate_regression.py",
+          "textkit/truncation.py",
+          "textkit/cli.py",
+          "tests/test_stats.py",
+          "textkit/stats.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/truncation.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 2,
+        "symbol_recall": 1.0,
+        "seconds": 0.11,
+        "context_chars": 5804,
+        "ranked": [
+          "textkit/truncation.py",
+          "textkit/cli.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/truncation.py": [
+            "defines `truncate` (mentioned in issue)",
+            "lexical match on ellipsi, cut, preview, limit, charact, long (BM25 0.52)",
+            "`test_truncate_result_fits_in_limit` (tests/test_truncate_regression.py) uses `truncate` defined here"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 1,
+        "symbol_recall": 1.0,
+        "seconds": 0.25,
+        "context_chars": 2182,
+        "ranked": [
+          "textkit/truncation.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/truncation.py": [
+            "defines `truncate` (mentioned in issue)",
+            "lexical match on ellipsi, cut, preview, limit, charact, long (BM25 0.52)",
+            "n-gram vector similarity 0.14 (local-ngram-768) via `truncate_middle`"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "textkit-e3-title-case-first-word",
+      "difficulty": "easy",
+      "expected_files": [
+        "textkit/case.py"
+      ],
+      "expected_symbols": [
+        "title_case"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.3333333333333333,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.06,
+        "context_chars": 9156,
+        "ranked": [
+          "textkit/cli.py",
+          "tests/test_case.py",
+          "textkit/case.py",
+          "README.md",
+          "textkit/__init__.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/case.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 3,
+        "symbol_recall": 1.0,
+        "seconds": 0.08,
+        "context_chars": 8086,
+        "ranked": [
+          "textkit/case.py",
+          "textkit/__init__.py",
+          "textkit/cli.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/case.py": [
+            "defines `title_case` (mentioned in issue)",
+            "lexical match on last, stay, capitalis, headline, title, title_case (BM25 1.00)",
+            "`test_title_case_custom_small_words` (tests/test_case.py) uses `title_case` defined here"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 3,
+        "symbol_recall": 1.0,
+        "seconds": 0.22,
+        "context_chars": 8124,
+        "ranked": [
+          "textkit/case.py",
+          "textkit/cli.py",
+          "textkit/__init__.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/case.py": [
+            "defines `title_case` (mentioned in issue)",
+            "lexical match on last, stay, capitalis, headline, title, title_case (BM25 1.00)",
+            "n-gram vector similarity 0.18 (local-ngram-768) via `title_case`"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "textkit-h1-template-escapes-and-missing-keys",
+      "difficulty": "hard",
+      "expected_files": [
+        "textkit/template.py"
+      ],
+      "expected_symbols": [
+        "render",
+        "placeholders",
+        "TemplateError"
+      ],
+      "keyword": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.06,
+        "context_chars": 9123,
+        "ranked": [
+          "textkit/template.py",
+          "textkit/cli.py",
+          "README.md",
+          "textkit/__init__.py",
+          "tests/test_template.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/template.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 2,
+        "symbol_recall": 1.0,
+        "seconds": 0.08,
+        "context_chars": 3970,
+        "ranked": [
+          "textkit/template.py",
+          "textkit/errors.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/template.py": [
+            "stack trace frame: line 40 in render()",
+            "stack trace frame: line 38 in substitute()",
+            "stack trace frame: line 19 in _lookup()"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 2,
+        "symbol_recall": 1.0,
+        "seconds": 0.22,
+        "context_chars": 4015,
+        "ranked": [
+          "textkit/template.py",
+          "textkit/errors.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/template.py": [
+            "stack trace frame: line 40 in render()",
+            "stack trace frame: line 38 in substitute()",
+            "stack trace frame: line 19 in _lookup()"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "textkit-m1-top-words-normalization",
+      "difficulty": "medium",
+      "expected_files": [
+        "textkit/tokenize.py"
+      ],
+      "expected_symbols": [
+        "word_tokens"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 0.0,
+        "recall@5": 0.0,
+        "mrr": 0.0,
+        "all_found": false,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.06,
+        "context_chars": 9251,
+        "ranked": [
+          "textkit/cli.py",
+          "textkit/stats.py",
+          "textkit/__init__.py",
+          "tests/test_stats.py",
+          "README.md"
+        ],
+        "error": null,
+        "reasons": {}
+      },
+      "layered-noembed": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.5,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 1.0,
+        "seconds": 0.08,
+        "context_chars": 10889,
+        "ranked": [
+          "textkit/stats.py",
+          "textkit/tokenize.py",
+          "textkit/__init__.py",
+          "textkit/cli.py",
+          "textkit/normalize.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/tokenize.py": [
+            "defines `word_tokens` (mentioned in issue)",
+            "lexical match on don, word_token, token, word, textkit (BM25 0.23)",
+            "`word_count` (textkit/stats.py) uses `word_tokens` defined here"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.5,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 1.0,
+        "seconds": 0.22,
+        "context_chars": 10968,
+        "ranked": [
+          "textkit/stats.py",
+          "textkit/tokenize.py",
+          "textkit/__init__.py",
+          "textkit/cli.py",
+          "textkit/normalize.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/tokenize.py": [
+            "defines `word_tokens` (mentioned in issue)",
+            "lexical match on don, word_token, token, word, textkit (BM25 0.23)",
+            "n-gram vector similarity 0.07 (local-ngram-768) via `word_spans`"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "textkit-m2-csv-quoted-fields",
+      "difficulty": "medium",
+      "expected_files": [
+        "textkit/csvio.py"
+      ],
+      "expected_symbols": [
+        "parse_csv_line"
+      ],
+      "keyword": {
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 0.5,
+        "all_found": true,
+        "returned": 5,
+        "symbol_recall": 0.0,
+        "seconds": 0.06,
+        "context_chars": 9417,
+        "ranked": [
+          "tests/test_csvio.py",
+          "textkit/csvio.py",
+          "textkit/cli.py",
+          "textkit/__init__.py",
+          "README.md"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/csvio.py": [
+            "keyword score"
+          ]
+        }
+      },
+      "layered-noembed": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 2,
+        "symbol_recall": 1.0,
+        "seconds": 0.08,
+        "context_chars": 4289,
+        "ranked": [
+          "textkit/csvio.py",
+          "textkit/errors.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/csvio.py": [
+            "stack trace frame: line 51 in read_rows()",
+            "defines `format_csv_line` (mentioned in issue)",
+            "defines `read_rows` (mentioned in issue)"
+          ]
+        }
+      },
+      "layered-local": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "all_found": true,
+        "returned": 2,
+        "symbol_recall": 1.0,
+        "seconds": 0.22,
+        "context_chars": 4326,
+        "ranked": [
+          "textkit/csvio.py",
+          "textkit/errors.py"
+        ],
+        "error": null,
+        "reasons": {
+          "textkit/csvio.py": [
+            "stack trace frame: line 51 in read_rows()",
+            "defines `format_csv_line` (mentioned in issue)",
+            "defines `read_rows` (mentioned in issue)"
+          ]
+        }
+      }
+    }
+  ],
+  "top_n": 5
+}

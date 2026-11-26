@@ -1,38 +1,34 @@
 """
 cli.py — Entry point for the fix-issue CLI.
 
-Usage:
-    fix-issue <owner/repo> <issue-number> [options]
+    fix-issue <owner/repo> <issue-number> [options]      # unchanged: resolve an issue
+    fix-issue resolve <owner/repo> <issue-number> ...    # same, explicit
+    fix-issue runs list | show <id> | stats              # inspect run history
+    fix-issue rerun <run-id> [overrides]                 # reproduce a run with new parameters
+    fix-issue bench validate | retrieval | run | report | compare | review
 
-This module owns the full pipeline orchestration and the patch retry loop.
-Each sub-module (triage, patch_generator, test_runner, etc.) does exactly one thing.
+The pipeline itself lives in orchestrator.py; this module only parses options, builds
+clients, and renders progress/history.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
 import click
-import requests
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.rule import Rule
+from rich.table import Table
 
-
+from fix_issue import __version__
 from fix_issue import config as cfg_module
-from fix_issue import logger
-from fix_issue.file_selector import format_for_prompt, select_relevant_files
-from fix_issue.github_client import GitHubClient, GitHubError
-from fix_issue.llm_provider import LLMError, build_provider
-from fix_issue.patch_generator import generate_patch
-from fix_issue.pr_builder import PRContent, build_pr, generate_llm_summary
-from fix_issue.repo_manager import ApplyError, RepoManager
-from fix_issue.scope_guard import ScopeViolation, check as scope_check
-from fix_issue.test_runner import run_tests
-from fix_issue.triage import triage_issue
+from fix_issue.llm_provider import LLMProvider, build_provider
+from fix_issue.orchestrator import Orchestrator, PipelineResult, Reporter
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -43,447 +39,539 @@ if hasattr(sys.stdout, "reconfigure"):
 console = Console()
 
 
+# ---------------------------------------------------------------------------
+# Rich progress reporter
+# ---------------------------------------------------------------------------
 
-@click.command()
+class ConsoleReporter(Reporter):
+    def __init__(self, con: Console | None = None, prefix: str = "") -> None:
+        self.c = con or console
+        self.prefix = prefix
+
+    def step(self, label: str, detail: str = "") -> None:
+        d = f" [dim]{detail}[/dim]" if detail else ""
+        self.c.print(f"\n{self.prefix}[bold cyan]→[/] {label}{d}")
+
+    def ok(self, msg: str) -> None:
+        self.c.print(f"{self.prefix}  [green]✓[/] {msg}")
+
+    def warn(self, msg: str) -> None:
+        self.c.print(f"{self.prefix}  [yellow]⚠[/] {msg}")
+
+    def fail(self, msg: str) -> None:
+        self.c.print(f"{self.prefix}  [red]✗[/] {msg}")
+
+    def info(self, msg: str) -> None:
+        self.c.print(f"{self.prefix}    [dim]{msg}[/dim]")
+
+    def rule(self, title: str) -> None:
+        self.c.print(Rule(f"[bold]{title}[/]", style="dim"))
+
+
+# ---------------------------------------------------------------------------
+# Group with a default command so `fix-issue owner/repo 123` keeps working
+# ---------------------------------------------------------------------------
+
+class DefaultGroup(click.Group):
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if args and args[0] not in self.commands and not args[0].startswith("-"):
+            args = ["resolve", *args]
+        return super().parse_args(ctx, args)
+
+
+@click.group(cls=DefaultGroup)
+@click.version_option(__version__)
+def main() -> None:
+    """Autonomous GitHub issue resolver — `fix-issue owner/repo 123` to fix an issue."""
+
+
+def _load_cfg(config_path: str | None) -> cfg_module.Config:
+    toml_path = Path(config_path) if config_path else Path.home() / ".fix-issue.toml"
+    return cfg_module.load(toml_path)
+
+
+def build_llms(cfg: cfg_module.Config) -> tuple[LLMProvider, LLMProvider | None]:
+    llm = build_provider(cfg.llm.provider, cfg.llm.api_key, cfg.llm.model, cfg.llm.base_url,
+                         temperature=cfg.llm.temperature, max_tokens=cfg.llm.max_tokens)
+    provider, key, base, model = cfg_module.critic_settings(cfg)
+    critic = None
+    if cfg.critic.model or cfg.critic.provider:
+        critic = build_provider(provider, key, model, base, temperature=cfg.llm.temperature,
+                                max_tokens=cfg.llm.max_tokens)
+    return llm, critic
+
+
+def _apply_overrides(cfg: cfg_module.Config, **ov: Any) -> None:
+    if ov.get("max_retries") is not None:
+        cfg.limits.max_retries = ov["max_retries"]
+    if ov.get("max_diff_lines") is not None:
+        cfg.limits.max_diff_lines = ov["max_diff_lines"]
+    if ov.get("profile"):
+        cfg.pipeline.profile = ov["profile"]
+    if ov.get("model"):
+        cfg.llm.model = ov["model"]
+    if ov.get("critic_model"):
+        cfg.critic.model = ov["critic_model"]
+    if ov.get("no_plan"):
+        cfg.pipeline.planning = False
+    if ov.get("no_critique"):
+        cfg.pipeline.critique = False
+    if ov.get("embedding_backend"):
+        cfg.retrieval.embedding_backend = ov["embedding_backend"]
+    if ov.get("temperature") is not None:
+        cfg.llm.temperature = ov["temperature"]
+
+
+_COMMON_OPTIONS = [
+    click.option("--dry-run", is_flag=True, help="Run everything but don't push, open a PR or post comments."),
+    click.option("--max-retries", type=int, default=None, help="Override max patch attempts."),
+    click.option("--max-diff-lines", type=int, default=None, help="Override max diff lines limit."),
+    click.option("--config", "config_path", default=None, help="Path to a custom .fix-issue.toml."),
+    click.option("--profile", type=click.Choice(["full", "baseline"]), default=None,
+                 help="full = planning/critique/layered retrieval; baseline = original pipeline."),
+    click.option("--model", default=None, help="Override the implementer model."),
+    click.option("--critic-model", default=None, help="Use a different model for the independent review."),
+    click.option("--no-plan", is_flag=True, help="Skip the planning stage."),
+    click.option("--no-critique", is_flag=True, help="Skip the independent review."),
+    click.option("--embedding-backend", type=click.Choice(["local", "openai_compatible", "none"]), default=None),
+    click.option("--temperature", type=float, default=None),
+]
+
+
+def _common(f):
+    for opt in reversed(_COMMON_OPTIONS):
+        f = opt(f)
+    return f
+
+
+@main.command("resolve")
 @click.argument("repo")
 @click.argument("issue_number", type=int)
-@click.option("--dry-run", is_flag=True, help="Run everything but don't open a PR or post comments.")
-@click.option("--max-retries", type=int, default=None, help="Override max patch attempts.")
-@click.option("--max-diff-lines", type=int, default=None, help="Override max diff lines limit.")
-@click.option("--config", "config_path", default=None, help="Path to a custom .fix-issue.toml.")
-@click.version_option()
-def main(
-    repo: str,
-    issue_number: int,
-    dry_run: bool,
-    max_retries: int | None,
-    max_diff_lines: int | None,
-    config_path: str | None,
-) -> None:
-    """
-    Autonomously fix a GitHub issue and open a PR.
+@_common
+def resolve_cmd(repo: str, issue_number: int, dry_run: bool, config_path: str | None, **ov: Any) -> None:
+    """Fix ISSUE_NUMBER in REPO (owner/repo) and open a PR."""
+    cfg = _load_cfg(config_path)
+    _apply_overrides(cfg, **ov)
+    result = run_github(cfg, repo, issue_number, dry_run)
+    sys.exit(0 if result.result in ("pr_opened", "dry_run", "needs_info", "out_of_scope", "duplicate") else 1)
 
-    REPO is in the form owner/repo (e.g. octocat/hello-world).
-    ISSUE_NUMBER is the issue number to fix.
-    """
-    # ---------------------------------------------------------------
-    # 0. Load and validate config
-    # ---------------------------------------------------------------
-    from pathlib import Path
-    toml_path = Path(config_path) if config_path else Path.home() / ".fix-issue.toml"
-    cfg = cfg_module.load(toml_path)
 
-    if max_retries is not None:
-        cfg.limits.max_retries = max_retries
-    if max_diff_lines is not None:
-        cfg.limits.max_diff_lines = max_diff_lines
+def run_github(cfg: cfg_module.Config, repo: str, issue_number: int, dry_run: bool) -> PipelineResult:
+    from fix_issue.adapters import GitHubIssueSource, GitHubPublisher
+    from fix_issue.duplicates import resolved_from_history
+    from fix_issue.github_client import GitHubClient, GitHubError
+    from fix_issue.repo_manager import RepoManager
+    from fix_issue.run_history import list_runs
 
     errors = cfg_module.validate(cfg)
     if errors:
         for e in errors:
             console.print(f"[bold red]Config error:[/] {e}")
-        console.print(
-            "\n[dim]Set up [bold]~/.fix-issue.toml[/] or environment variables. "
-            "See [bold].env.example[/] for details.[/dim]"
-        )
+        console.print("\n[dim]Set up [bold]~/.fix-issue.toml[/] or environment variables. "
+                      "See [bold].env.example[/] for details.[/dim]")
         sys.exit(1)
-
-    # Validate repo format
     if not re.match(r"^[\w.\-]+/[\w.\-]+$", repo):
         console.print(f"[bold red]Invalid repo format:[/] '{repo}'. Expected owner/repo.")
         sys.exit(1)
 
     console.print(Panel.fit(
-        f"[bold cyan]fix-issue[/] v0.1.0\n"
+        f"[bold cyan]fix-issue[/] v{__version__}  ·  profile [bold]{cfg.pipeline.profile}[/]\n"
         f"[white]Repo:[/] {repo}   [white]Issue:[/] #{issue_number}   "
-        f"[white]Model:[/] {cfg.llm.model}   "
-        f"[white]Provider:[/] {cfg.llm.provider}"
+        f"[white]Model:[/] {cfg.llm.model}   [white]Critic:[/] {cfg.critic.model or cfg.llm.model}"
         + ("   [yellow][DRY RUN][/]" if dry_run else ""),
-        title="🤖 Autonomous Issue Resolver",
-        border_style="cyan",
+        title="🤖 Autonomous Issue Resolver", border_style="cyan",
     ))
-
-    # ---------------------------------------------------------------
-    # Build clients
-    # ---------------------------------------------------------------
+    reporter = ConsoleReporter()
     gh = GitHubClient(cfg.github.token)
-    llm = build_provider(
-        provider=cfg.llm.provider,
-        api_key=cfg.llm.api_key,
-        model=cfg.llm.model,
-        base_url=cfg.llm.base_url,
-    )
-
-    # ---------------------------------------------------------------
-    # 1. Fetch issue
-    # ---------------------------------------------------------------
-    _step("Fetching issue", f"#{issue_number} from {repo}")
     try:
-        issue = gh.get_issue(repo, issue_number)
-    except GitHubError as e:
-        _fail(f"Could not fetch issue: {e}", repo, issue_number, "error", str(e))
-
-    issue_title = issue.get("title", "")
-    console.print(f"  [green]✓[/] [bold]{issue_title}[/]")
-
-    # Fetch README snippet for triage context
-    readme_snippet = ""
-    for readme_path in ("README.md", "README.rst", "README.txt", "readme.md"):
-        try:
-            content = gh.get_file_content(repo, readme_path)
-            if content:
-                readme_snippet = content[:2000]
-                break
-        except Exception:
-            pass
-
-    # ---------------------------------------------------------------
-    # 2. Triage
-    # ---------------------------------------------------------------
-    _step("Triaging issue", "classifying with LLM")
-    try:
-        triage = triage_issue(llm, issue, readme_snippet)
-    except (LLMError, ValueError, requests.exceptions.RequestException, TimeoutError) as e:
-        _fail(f"Triage failed: {e}", repo, issue_number, "error", str(e))
-
-
-    _triage_display(triage)
-
-    if triage.classification == "needs_info":
-        _handle_needs_info(triage, gh, repo, issue_number, dry_run)
-        logger.log_run(
-            repo=repo, issue_number=issue_number, result="needs_info",
-            classification="needs_info", triage_confidence=triage.confidence,
-        )
-        return
-
-    if triage.classification in ("out_of_scope", "duplicate"):
-        console.print(
-            f"\n[yellow]⏭  Skipping:[/] Issue classified as [bold]{triage.classification}[/].\n"
-            f"   Reason: {triage.reason}"
-        )
-        logger.log_run(
-            repo=repo, issue_number=issue_number, result=triage.classification,
-            classification=triage.classification, triage_confidence=triage.confidence,
-        )
-        return
-
-    # ---------------------------------------------------------------
-    # 3. Clone repo + select relevant files
-    # ---------------------------------------------------------------
-    default_branch = gh.get_default_branch(repo)
-    fix_branch = f"fix-issue-{issue_number}"
-
-    _step("Cloning repo", f"branch: {fix_branch}")
-
-    with RepoManager(repo=repo, token=cfg.github.token, branch=fix_branch) as repo_mgr:
-        _step("Selecting relevant files", "keyword scoring")
-        relevant_files = select_relevant_files(
-            issue_title=issue_title,
-            issue_body=issue.get("body") or "",
-            repo_root=repo_mgr.root,
-            top_n=cfg.limits.relevant_files,
-        )
-        file_context = format_for_prompt(relevant_files)
-        console.print(f"  [green]✓[/] {len(relevant_files)} relevant file(s) selected")
-
-        # Detect test command once
-        test_command = repo_mgr.detect_test_command()
-        if test_command:
-            console.print(f"  [green]✓[/] Test command detected: [dim]{' '.join(test_command)}[/]")
-        else:
-            console.print("  [yellow]⚠[/] No test command detected — patch will be applied but not tested")
-
-        # ---------------------------------------------------------------
-        # 4. Patch retry loop  (owned here in cli.py)
-        # ---------------------------------------------------------------
-        prior_failures: list[str] = []
-        final_diff: str | None = None
-        test_passed = False
-        attempts = 0
-
-        for attempt in range(1, cfg.limits.max_retries + 1):
-            attempts = attempt
-            console.print(Rule(f"[bold]Attempt {attempt} / {cfg.limits.max_retries}[/]", style="dim"))
-
-            # 4a. Generate patch
-            _step("Generating patch", f"attempt {attempt}")
-            console.print("  [dim]Waiting on LLM response...[/dim]")
-            try:
-                diff = generate_patch(llm, issue, file_context, prior_failures, repo_mgr.root)
-
-            except (LLMError, ValueError, requests.exceptions.RequestException, TimeoutError) as e:
-                err_msg = f"LLM patch generation failed or timed out: {e}"
-                console.print(f"  [red]✗[/] {err_msg}")
-                prior_failures.append(err_msg)
-                continue
-
-
-
-            if diff is None:
-                console.print("  [yellow]⚠[/] Model responded CANNOT_FIX — stopping.")
-                logger.log_run(
-                    repo=repo, issue_number=issue_number, result="cannot_fix",
-                    classification="fixable", triage_confidence=triage.confidence,
-                    attempts=attempts,
-                )
-                return
-
-            console.print(f"  [green]✓[/] Diff generated ({_count_diff_lines(diff)} lines)")
-
-            # 4b. Scope guard — BEFORE any test run
-            _step("Checking scope", "diff size + ignored paths")
-            try:
-                scope_check(diff, repo_mgr.root, cfg.limits.max_diff_lines)
-                console.print("  [green]✓[/] Scope checks passed")
-            except ScopeViolation as e:
-                console.print(f"  [red]✗[/] Scope violation: {e}")
-                logger.log_run(
-                    repo=repo, issue_number=issue_number, result="scope_violation",
-                    classification="fixable", triage_confidence=triage.confidence,
-                    attempts=attempts, error_message=str(e),
-                )
-                _post_scope_comment(gh, repo, issue_number, str(e), dry_run)
-                return
-
-            # 4c. Apply patch
-            _step("Applying patch", "git apply")
-            try:
-                repo_mgr.apply_patch(diff)
-                console.print("  [green]✓[/] Patch applied")
-            except ApplyError as e:
-                console.print(f"  [red]✗[/] Patch apply failed: {e}")
-                prior_failures.append(f"Patch apply failed:\n{e}")
-                continue  # count as failed attempt, try again
-
-            # 4d. Run tests
-            if test_command:
-                _step("Running test suite", " ".join(test_command))
-                result = run_tests(test_command, repo_mgr.root, cfg.limits.test_timeout_seconds)
-                elapsed = f"{result.duration_seconds:.1f}s"
-                if result.passed:
-                    console.print(f"  [green]✓[/] Tests passed ({elapsed})")
-                    test_passed = True
-                    final_diff = diff
-                    break
-                else:
-                    console.print(f"  [red]✗[/] Tests failed ({elapsed})")
-                    console.print(f"[dim]{result.output[-600:]}[/dim]")
-                    prior_failures.append(result.output)
-                    # Reset working tree for next attempt
-                    try:
-                        repo_mgr._run(["git", "checkout", "."])
-                        repo_mgr._run(["git", "clean", "-fd"])
-                    except Exception:
-                        pass
-            else:
-                # No test command — accept the patch if it applies cleanly
-                console.print("  [yellow]⚠[/] No tests — accepting patch on clean apply")
-                test_passed = False
-                final_diff = diff
-                break
-
-        # ---------------------------------------------------------------
-        # 5. Commit + push
-        # ---------------------------------------------------------------
-        if final_diff is None:
-            console.print(
-                f"\n[bold red]✗ All {cfg.limits.max_retries} attempts failed.[/] "
-                f"Could not produce a passing patch."
-            )
-            _post_failure_comment(gh, repo, issue_number, prior_failures, dry_run)
-            logger.log_run(
-                repo=repo, issue_number=issue_number, result="error",
-                classification="fixable", triage_confidence=triage.confidence,
-                attempts=attempts,
-                error_message=f"All {cfg.limits.max_retries} attempts failed",
-            )
-            sys.exit(1)
-
-        if not dry_run:
-            _step("Committing changes", fix_branch)
-            commit_msg = f"fix: resolve issue #{issue_number} — {issue_title[:60]}"
-            repo_mgr.commit_all(commit_msg)
-            console.print("  [green]✓[/] Changes committed")
-
-            _step("Pushing branch", fix_branch)
-            repo_mgr.push_branch()
-            console.print(f"  [green]✓[/] Pushed branch [bold]{fix_branch}[/]")
-
-    # ---------------------------------------------------------------
-    # 6. Build PR + open it
-    # ---------------------------------------------------------------
-    _step("Building PR", "generating summary")
-    llm_summary = generate_llm_summary(llm, issue, final_diff)
-    pr_content = build_pr(
-        issue=issue,
-        diff_text=final_diff,
-        triage_reason=triage.reason,
-        triage_confidence=triage.confidence,
-        llm_summary=llm_summary,
-        tests_passed=test_passed,
-        test_command=test_command,
-        attempt_count=attempts,
-        repo=repo,
+        base_branch = gh.get_default_branch(repo)
+    except GitHubError as exc:
+        console.print(f"[bold red]✗ Could not reach repo:[/] {exc}")
+        sys.exit(1)
+    llm, critic = build_llms(cfg)
+    branch = f"fix-issue-{issue_number}"
+    history = resolved_from_history(list_runs(), repo)
+    orch = Orchestrator(
+        cfg, llm, GitHubIssueSource(gh, repo, issue_number),
+        lambda: RepoManager(repo=repo, token=cfg.github.token, branch=branch),
+        GitHubPublisher(gh, repo, issue_number, base_branch, dry_run=dry_run, reporter=reporter),
+        critic_llm=critic, reporter=reporter, dry_run=dry_run, branch=branch, history_candidates=history,
+        source_meta={"type": "github", "repo": repo, "issue": issue_number},
     )
+    result = orch.run()
+    _final_panel(result, dry_run)
+    return result
 
-    if dry_run:
+
+def _final_panel(result: PipelineResult, dry_run: bool) -> None:
+    if dry_run and result.pr_body:
         console.print("\n[yellow][DRY RUN] PR would have been opened:[/]")
-        console.print(f"  Title: {pr_content.title}")
-        console.print(f"  Confidence: {pr_content.confidence}/10")
+        console.print(f"  Title: {result.pr_title}")
+        console.print(f"  Confidence: {result.confidence}/10   Review: {result.verdict}")
         console.print("\n[dim]PR body:[/dim]")
-        console.print(pr_content.body)
-        console.print("\n[dim]Patch (final_diff):[/dim]")
-        console.print(final_diff)
-        logger.log_run(
-            repo=repo, issue_number=issue_number, result="dry_run",
-            classification="fixable", triage_confidence=triage.confidence,
-            confidence=pr_content.confidence, attempts=attempts,
-        )
-        return
-
-    _step("Opening PR", repo)
-    try:
-        # Check for an existing PR on this branch first
-        existing = gh.list_open_prs(repo, fix_branch)
-        if existing:
-            pr_url = existing[0]["html_url"]
-            console.print(f"  [yellow]⚠[/] PR already exists: {pr_url}")
-        else:
-            pr = gh.create_pr(
-                repo=repo,
-                head=fix_branch,
-                base=default_branch,
-                title=pr_content.title,
-                body=pr_content.body,
-            )
-            pr_url = pr["html_url"]
-            console.print(f"  [green]✓[/] PR opened: [link={pr_url}]{pr_url}[/link]")
-    except GitHubError as e:
-        _fail(f"Could not open PR: {e}", repo, issue_number, "error", str(e))
-
-    logger.log_run(
-        repo=repo, issue_number=issue_number, result="pr_opened",
-        pr_url=pr_url, confidence=pr_content.confidence,
-        classification="fixable", triage_confidence=triage.confidence,
-        attempts=attempts,
-    )
-
+        console.print(result.pr_body)
+        console.print("\n[dim]Patch:[/dim]")
+        console.print(result.final_diff or "")
+    colour = "green" if result.result in ("pr_opened", "dry_run") else "yellow"
     console.print(Panel.fit(
-        f"[bold green]✓ Done![/]\n"
-        f"PR: [link={pr_url}]{pr_url}[/link]\n"
-        f"Confidence: [bold]{pr_content.confidence}/10[/]  •  "
-        f"Attempts: {attempts}  •  Tests: {'✅' if test_passed else '⚠️'}",
-        border_style="green",
+        f"[bold {colour}]{result.result}[/]"
+        + (f"\nPR: {result.pr_url}" if result.pr_url else "")
+        + f"\nReview: {result.verdict or '—'}  •  Attempts: {result.attempts}  •  "
+          f"Tests: {'✅' if result.tests_passed else '⚠️'}  •  Confidence: {result.confidence or '—'}"
+        + f"\nRun: [bold]{result.run_id}[/]  (fix-issue runs show {result.run_id})",
+        border_style=colour,
     ))
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Run history
 # ---------------------------------------------------------------------------
 
-def _step(label: str, detail: str = "") -> None:
-    detail_str = f" [dim]{detail}[/dim]" if detail else ""
-    console.print(f"\n[bold cyan]→[/] {label}{detail_str}")
+@main.group("runs")
+def runs_group() -> None:
+    """Inspect structured run history (~/.fix-issue/runs)."""
 
 
-def _fail(
-    message: str,
-    repo: str,
-    issue_number: int,
-    result: str,
-    error_message: str,
-) -> None:
-    console.print(f"\n[bold red]✗ {message}[/]")
-    logger.log_run(
-        repo=repo, issue_number=issue_number, result=result,
-        error_message=error_message,
-    )
-    sys.exit(1)
+@runs_group.command("list")
+@click.option("--limit", type=int, default=20)
+@click.option("--repo", default=None)
+@click.option("--result", "result_filter", default=None)
+@click.option("--json", "as_json", is_flag=True)
+def runs_list(limit: int, repo: str | None, result_filter: str | None, as_json: bool) -> None:
+    from fix_issue.run_history import list_runs, summarize
+
+    rows = [summarize(r) for r in list_runs()]
+    if repo:
+        rows = [r for r in rows if r["repo"] == repo]
+    if result_filter:
+        rows = [r for r in rows if r["result"] == result_filter]
+    rows = rows[:limit]
+    if as_json:
+        click.echo(json.dumps(rows, indent=2))
+        return
+    t = Table(title=f"fix-issue runs ({len(rows)})")
+    for col in ("run_id", "started_at", "repo", "issue", "profile", "classification", "files_retrieved",
+                "attempts", "verdict", "result", "duration"):
+        t.add_column(col, overflow="fold")
+    for r in rows:
+        t.add_row(*[str(r.get(c) if r.get(c) is not None else "—") for c in (
+            "run_id", "started_at", "repo", "issue", "profile", "classification", "files_retrieved",
+            "attempts", "verdict", "result", "duration")])
+    console.print(t)
 
 
-def _triage_display(triage: Any) -> None:
-    colour = {
-        "fixable": "green",
-        "needs_info": "yellow",
-        "out_of_scope": "red",
-        "duplicate": "magenta",
-    }.get(triage.classification, "white")
-    console.print(
-        f"  [{colour}]✓ {triage.classification.upper()}[/]  "
-        f"(confidence: {triage.confidence:.0%})  —  {triage.reason}"
-    )
+_SECTIONS = ("issue", "triage", "controls", "similar_issues", "tooling", "baseline", "retrieval", "plans",
+             "attempts", "critiques", "pr", "llm", "outcome", "events", "params")
 
 
-def _handle_needs_info(triage: Any, gh: GitHubClient, repo: str, issue_number: int, dry_run: bool) -> None:
-    question = triage.suggested_question or "Could you provide more details or a minimal reproduction case?"
-    comment_body = (
-        f"👋 Hi! I looked at this issue and need a bit more information before I can attempt a fix.\n\n"
-        f"**{question}**\n\n"
-        f"*(This comment was posted automatically by fix-issue. "
-        f"Once you provide the details, re-run `fix-issue {repo} {issue_number}` to try again.)*"
-    )
-    if dry_run:
-        console.print("\n[yellow][DRY RUN] Would post comment:[/]")
-        console.print(comment_body)
-    else:
+@runs_group.command("show")
+@click.argument("run_id")
+@click.option("--section", type=click.Choice(_SECTIONS), default=None, help="Print one section as JSON.")
+@click.option("--json", "as_json", is_flag=True, help="Print the whole record as JSON.")
+def runs_show(run_id: str, section: str | None, as_json: bool) -> None:
+    from fix_issue.run_history import load_run
+
+    try:
+        rec = load_run(run_id)
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/]")
+        sys.exit(1)
+    if as_json or section:
+        data = rec.get(section) if section else rec
+        if section == "llm" and isinstance(data, dict):
+            data = {k: v for k, v in data.items() if k != "calls"} | {
+                "calls": [{k: v for k, v in c.items() if k not in ("prompt_tail", "response")} for c in data.get("calls", [])]}
+        click.echo(json.dumps(data, indent=2, default=str))
+        return
+    _print_run(rec)
+
+
+def _print_run(rec: dict[str, Any]) -> None:
+    out = rec.get("outcome") or {}
+    tri = rec.get("triage") or {}
+    console.print(Panel.fit(
+        f"[bold]{rec.get('run_id')}[/]\n{rec.get('repo')} #{rec.get('issue_number')} — "
+        f"{(rec.get('issue') or {}).get('title', '')}\nprofile {(rec.get('params') or {}).get('profile')} · "
+        f"model {(rec.get('params') or {}).get('model')} · result [bold]{out.get('result', 'incomplete')}[/] · "
+        f"{out.get('duration_seconds', '?')}s", border_style="cyan"))
+    if tri:
+        console.print(f"[bold]Triage[/] {tri.get('classification')} ({tri.get('confidence')}) — {tri.get('reason')}")
+        extras = {k: tri.get(k) for k in ("complexity", "difficulty", "risk_level", "root_cause_category",
+                                          "reproduction", "expected_files") if tri.get(k) is not None}
+        if extras:
+            console.print(f"  [dim]{extras}[/dim]")
+    for line in (rec.get("controls") or {}).get("rationale", []):
+        console.print(f"  [dim]control: {line}[/dim]")
+    if rec.get("similar_issues"):
+        console.print("[bold]Similar resolved issues[/]")
+        for s in rec["similar_issues"]:
+            console.print(f"  #{s.get('number')} {s.get('similarity')} {s.get('title')}")
+    if rec.get("baseline"):
+        b = rec["baseline"]
+        console.print(f"[bold]Baseline tests[/] passed={b.get('passed')} {b.get('summary')}")
+    ret = rec.get("retrieval") or {}
+    if ret.get("files"):
+        console.print(f"[bold]Retrieval[/] ({ret.get('embedding_backend', ret.get('method', ''))})")
+        for f in ret["files"]:
+            console.print(f"  {f.get('score', 0):>6.2f}  {f['path']}  [dim]{'; '.join(f.get('reasons', [])[:3])}[/dim]")
+    for p in rec.get("plans") or []:
+        console.print(f"[bold]Plan v{p.get('version')}[/] {p.get('root_cause')}")
+        for s in p.get("steps", []):
+            console.print(f"  {s.get('id')}: {s.get('description')} [dim]{s.get('files')}[/dim]")
+        if p.get("warnings"):
+            console.print(f"  [yellow]warnings: {p['warnings']}[/]")
+    for a in rec.get("attempts") or []:
+        console.print(f"[bold]Attempt {a.get('attempt')}[/] → {a.get('result')}")
+        for e in a.get("edits", []) or []:
+            console.print(f"  edit {e.get('step') or ''}: {e.get('summary') or 'failed'}  [dim]{(e.get('intent') or '')[:140]}[/dim]")
+        if a.get("tests"):
+            console.print(f"  tests: passed={a['tests'].get('passed')} {a['tests'].get('summary')}")
+        if a.get("failure"):
+            console.print(f"  [red]failure {a['failure'].get('category')}[/]: {a['failure'].get('message', '')[:300]}")
+    for c in rec.get("critiques") or []:
+        console.print(f"[bold]Review[/] {c.get('verdict')} (reviewer: {c.get('llm_verdict')}) — {c.get('summary')}")
+        for g in c.get("gates", []):
+            console.print(f"  [dim]gate: {g}[/dim]")
+    llm = (rec.get("llm") or {}).get("implementer") or {}
+    if llm:
+        console.print(f"[bold]LLM[/] {llm.get('calls')} calls, {llm.get('seconds')}s, by purpose {llm.get('by_purpose')}")
+    if out.get("pr_url"):
+        console.print(f"[bold]PR[/] {out['pr_url']}")
+
+
+@runs_group.command("stats")
+def runs_stats() -> None:
+    from collections import Counter
+
+    from fix_issue.run_history import list_runs, summarize
+
+    rows = [summarize(r) for r in list_runs()]
+    if not rows:
+        console.print("No runs recorded yet.")
+        return
+    t = Table(title=f"{len(rows)} runs")
+    t.add_column("result")
+    t.add_column("count", justify="right")
+    for k, v in Counter(r["result"] for r in rows).most_common():
+        t.add_row(str(k), str(v))
+    console.print(t)
+    verdicts = Counter(r["verdict"] for r in rows if r["verdict"])
+    if verdicts:
+        console.print(f"review verdicts: {dict(verdicts)}")
+    att = [r["attempts"] for r in rows if r["attempts"]]
+    if att:
+        console.print(f"mean attempts: {sum(att) / len(att):.2f}")
+
+
+@main.command("rerun")
+@click.argument("run_id")
+@_common
+def rerun_cmd(run_id: str, dry_run: bool, config_path: str | None, **ov: Any) -> None:
+    """Re-run a recorded run (same issue, same recorded parameters) with optional overrides."""
+    from fix_issue.run_history import load_run
+
+    rec = load_run(run_id)
+    cfg = _load_cfg(config_path)
+    p = rec.get("params") or {}
+    cfg.pipeline.profile = p.get("profile", cfg.pipeline.profile)
+    cfg.llm.model = p.get("model", cfg.llm.model)
+    if p.get("temperature") is not None:
+        cfg.llm.temperature = p["temperature"]
+    for k, v in (p.get("limits") or {}).items():
+        if hasattr(cfg.limits, k):
+            setattr(cfg.limits, k, v)
+    for k, v in (p.get("pipeline") or {}).items():
+        if hasattr(cfg.pipeline, k):
+            setattr(cfg.pipeline, k, v)
+    if p.get("critic_model") and p.get("critic_model") != cfg.llm.model:
+        cfg.critic.model = p["critic_model"]
+    _apply_overrides(cfg, **ov)
+    src = rec.get("source") or {}
+    console.print(f"[dim]Re-running {run_id} ({src.get('type', 'github')}) with profile {cfg.pipeline.profile}, "
+                  f"model {cfg.llm.model}[/dim]")
+    if src.get("type") == "bench":
+        from fix_issue.bench.cases import DEFAULT_BENCH_DIR, load_case
+        from fix_issue.bench.runner import run_case
+        from fix_issue.run_history import runs_dir
+
+        case = load_case(DEFAULT_BENCH_DIR / "cases" / src["case_id"])
+        graded = run_case(case, cfg, lambda: build_llms(cfg), runs_dir(), reporter=ConsoleReporter())
+        click.echo(json.dumps({k: v for k, v in graded.items() if not k.endswith("_tail")}, indent=2))
+        return
+    run_github(cfg, rec["repo"], int(rec["issue_number"]), dry_run or bool((p or {}).get("dry_run")))
+
+
+# ---------------------------------------------------------------------------
+# Benchmark
+# ---------------------------------------------------------------------------
+
+@main.group("bench")
+def bench_group() -> None:
+    """Reproducible evaluation benchmark on isolated fixture repositories."""
+
+
+def _bench_dir(path: str | None) -> Path:
+    from fix_issue.bench.cases import DEFAULT_BENCH_DIR
+
+    return Path(path) if path else DEFAULT_BENCH_DIR
+
+
+@bench_group.command("validate")
+@click.option("--bench-dir", default=None)
+@click.option("--cases", "only", multiple=True, help="Case ids, difficulties or fixtures to include.")
+def bench_validate(bench_dir: str | None, only: tuple[str, ...]) -> None:
+    """Check every case: clean fixture passes, injected bug is caught by hidden tests."""
+    from fix_issue.bench.cases import load_cases
+    from fix_issue.bench.validate import validate_case
+
+    cases = load_cases(_bench_dir(bench_dir), list(only) or None)
+    bad = 0
+    for c in cases:
+        r = validate_case(c)
+        console.print(f"{'[green]OK[/]  ' if r.ok else '[red]FAIL[/]'} {c.id}")
+        for p in r.problems:
+            console.print(f"      [red]{p[:800]}[/]")
+        bad += not r.ok
+    console.print(f"\n{len(cases) - bad}/{len(cases)} cases valid")
+    sys.exit(1 if bad else 0)
+
+
+@bench_group.command("retrieval")
+@click.option("--bench-dir", default=None)
+@click.option("--cases", "only", multiple=True)
+@click.option("--top-n", type=int, default=5)
+@click.option("--config", "config_path", default=None, help="Config whose [retrieval] API embedding to include.")
+@click.option("--out", default=None, help="Write JSON results here (a .md summary is written next to it).")
+def bench_retrieval(bench_dir: str | None, only: tuple[str, ...], top_n: int, config_path: str | None,
+                    out: str | None) -> None:
+    """Evaluate retrieval alone (no LLM): keyword baseline vs layered variants."""
+    from fix_issue.bench.cases import load_cases
+    from fix_issue.bench.retrieval_eval import default_configs, evaluate_retrieval, render_retrieval_markdown
+    from fix_issue.retrieval import build_embedder
+
+    cases = [c for c in load_cases(_bench_dir(bench_dir), list(only) or None) if c.is_fix]
+    api = None
+    if config_path:
+        cfg = _load_cfg(config_path)
+        backend, base, key, model = cfg_module.embedding_settings(cfg)
+        if backend == "openai_compatible":
+            api = build_embedder(backend, base_url=base, api_key=key, model=model)
+    cache = cfg_module.fix_issue_home() / "cache" / "embeddings.jsonl"
+    data = evaluate_retrieval(cases, default_configs(api), top_n=top_n, cache_path=cache)
+    md = render_retrieval_markdown(data)
+    console.print(md)
+    if out:
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(json.dumps(data, indent=2), encoding="utf-8")
+        Path(out).with_suffix(".md").write_text(md, encoding="utf-8")
+        console.print(f"[dim]wrote {out}[/dim]")
+
+
+@bench_group.command("run")
+@click.option("--bench-dir", default=None)
+@click.option("--cases", "only", multiple=True)
+@click.option("--config", "config_path", default=None, help="Benchmark config (e.g. benchmark/bench.toml).")
+@click.option("--profile", type=click.Choice(["full", "baseline"]), default=None)
+@click.option("--parallel", type=int, default=2)
+@click.option("--out", default=None, help="Results JSON path (default benchmark/results/<profile>-<stamp>.json).")
+@click.option("--verbose", is_flag=True, help="Stream pipeline progress for every case.")
+def bench_run(bench_dir: str | None, only: tuple[str, ...], config_path: str | None, profile: str | None,
+              parallel: int, out: str | None, verbose: bool) -> None:
+    """Run the benchmark through the real pipeline with a real LLM and grade it."""
+    from datetime import datetime
+
+    from fix_issue.bench.cases import load_cases
+    from fix_issue.bench.report import render_markdown
+    from fix_issue.bench.runner import run_benchmark
+
+    bdir = _bench_dir(bench_dir)
+    cfg = _load_cfg(config_path or str(bdir / "bench.toml"))
+    if profile:
+        cfg.pipeline.profile = profile
+    errors = [e for e in cfg_module.validate(cfg) if "GITHUB_TOKEN" not in e]
+    if errors:
+        for e in errors:
+            console.print(f"[bold red]Config error:[/] {e}")
+        sys.exit(1)
+    cases = load_cases(bdir, list(only) or None)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out_path = Path(out) if out else bdir / "results" / f"{cfg.pipeline.profile}-{stamp}.json"
+    console.print(f"Running {len(cases)} cases · profile {cfg.pipeline.profile} · model {cfg.llm.model} "
+                  f"· critic {cfg.critic.model or cfg.llm.model} · parallel {parallel}\n→ {out_path}")
+
+    def progress(r: dict) -> None:
+        mark = "[green]✓[/]" if r.get("success") else "[red]✗[/]"
+        console.print(f"{mark} {r['case_id']:<48} {r.get('difficulty', ''):<6} "
+                      f"class={r.get('classification')} fixed={r.get('issue_fixed')} "
+                      f"att={r.get('attempts')} review={r.get('critique_verdict')} "
+                      f"{'' if r.get('success') else r.get('failure_category')} ({r.get('duration_seconds')}s)")
+
+    rf = (lambda c: ConsoleReporter(prefix=f"[{c.id[:18]}] ")) if verbose else None
+    data = run_benchmark(cases, cfg, lambda: build_llms(cfg), out_path, llm_mode="real",
+                         parallel=parallel, reporter_factory=rf, progress=progress)
+    md = render_markdown(data)
+    out_path.with_suffix(".md").write_text(md, encoding="utf-8")
+    console.print(md)
+
+
+@bench_group.command("report")
+@click.argument("results", type=click.Path(exists=True))
+def bench_report(results: str) -> None:
+    """Re-render a results file (applies manual verdicts if present)."""
+    from fix_issue.bench.report import load_results, render_markdown
+
+    data = load_results(Path(results))
+    md = render_markdown(data)
+    Path(results).with_suffix(".md").write_text(md, encoding="utf-8")
+    console.print(md)
+
+
+@bench_group.command("compare")
+@click.argument("baseline", type=click.Path(exists=True))
+@click.argument("improved", type=click.Path(exists=True))
+@click.option("--out", default=None)
+def bench_compare(baseline: str, improved: str, out: str | None) -> None:
+    """Side-by-side metrics for two results files."""
+    from fix_issue.bench.report import load_results, render_comparison
+
+    md = render_comparison(load_results(Path(baseline)), load_results(Path(improved)))
+    console.print(md)
+    if out:
+        Path(out).write_text(md, encoding="utf-8")
+
+
+@bench_group.command("review")
+@click.argument("results", type=click.Path(exists=True))
+@click.option("--all", "include_all", is_flag=True, help="Review every fix case, not only flagged ones.")
+@click.option("--set", "set_verdict", multiple=True, help="Non-interactive: CASE_ID=correct|incorrect|unsure")
+@click.option("--note", default="")
+def bench_review(results: str, include_all: bool, set_verdict: tuple[str, ...], note: str) -> None:
+    """Record human correctness verdicts where automated checks are insufficient."""
+    from fix_issue.bench.manual import interactive_review, save_verdict
+    from fix_issue.run_history import load_run
+
+    path = Path(results)
+    if set_verdict:
+        for item in set_verdict:
+            cid, _, verdict = item.partition("=")
+            save_verdict(path, cid.strip(), verdict.strip(), note)
+            console.print(f"recorded {cid} = {verdict}")
+        return
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    runs_dir = Path(data["meta"].get("runs_dir", ""))
+
+    def diff_loader(r: dict) -> str:
         try:
-            gh.post_comment(repo, issue_number, comment_body)
-            console.print(f"  [green]✓[/] Clarifying question posted on issue #{issue_number}")
-        except GitHubError as e:
-            console.print(f"  [yellow]⚠[/] Could not post comment: {e}")
+            rec = load_run(r["run_id"], runs_dir)
+            atts = rec.get("attempts") or []
+            return next((a.get("diff") for a in reversed(atts) if a.get("diff")), "")
+        except Exception:
+            return ""
 
-
-def _post_scope_comment(gh: GitHubClient, repo: str, issue_number: int, reason: str, dry_run: bool) -> None:
-    body = (
-        f"⚠️ I analysed this issue but the required change exceeds my configured scope limits:\n\n"
-        f"> {reason}\n\n"
-        f"A human review is needed for this one. "
-        f"If you want to allow larger diffs, adjust `max_diff_lines` in `~/.fix-issue.toml` "
-        f"or update `.fix-issue-ignore` in the repo.\n\n"
-        f"*(Posted automatically by fix-issue.)*"
-    )
-    if dry_run:
-        console.print("\n[yellow][DRY RUN] Would post scope comment[/]")
-        return
-    try:
-        gh.post_comment(repo, issue_number, body)
-    except GitHubError:
-        pass
-
-
-def _post_failure_comment(
-    gh: GitHubClient,
-    repo: str,
-    issue_number: int,
-    prior_failures: list[str],
-    dry_run: bool,
-) -> None:
-    last_failure = prior_failures[-1][:1500] if prior_failures else "No details available."
-    body = (
-        f"🤖 I attempted to fix this issue but all retry attempts failed.\n\n"
-        f"**Last test failure:**\n```\n{last_failure}\n```\n\n"
-        f"This may need a more involved fix than I can safely produce automatically. "
-        f"*(Posted automatically by fix-issue.)*"
-    )
-    if dry_run:
-        console.print("\n[yellow][DRY RUN] Would post failure comment[/]")
-        return
-    try:
-        gh.post_comment(repo, issue_number, body)
-    except GitHubError:
-        pass
-
-
-def _count_diff_lines(diff_text: str) -> int:
-    return sum(
-        1 for line in diff_text.splitlines()
-        if (line.startswith("+") or line.startswith("-"))
-        and not line.startswith("---")
-        and not line.startswith("+++")
-    )
+    n = interactive_review(path, ask=input, show=console.print, diff_loader=diff_loader, include_all=include_all)
+    console.print(f"{n} verdict(s) recorded → run `fix-issue bench report {results}`")
 
 
 if __name__ == "__main__":
     main()
-
