@@ -1,0 +1,63 @@
+id = "taskq-m2-storage-datetime-roundtrip"
+fixture = "taskq"
+difficulty = "medium"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "serialization"
+notes = "Reference fix: Task.from_dict (taskq/task.py) must parse next_run back into a datetime (next_run=_parse_dt(data.get('next_run'))), like it already does for created_at. The TypeError surfaces in Worker._is_due, but worker.py is correct; coercing there would leave restored Task objects inconsistent."
+
+[issue]
+number = 115
+title = "Worker crashes with TypeError after restoring scheduled tasks from disk"
+labels = ["bug"]
+body = '''
+If a task has a scheduled time (submitted with `run_at`, or it failed once and got a retry scheduled), then saving the service, restoring it in a new process and running the worker blows up:
+
+```python
+from datetime import datetime, timezone
+from taskq.api import TaskService
+from taskq.storage import JsonStore
+from taskq.worker import Worker
+
+service = TaskService(store=JsonStore("tasks.json"))
+service.submit("send_report", {"report": 7}, run_at=datetime(2024, 3, 1, 9, 0, tzinfo=timezone.utc))
+service.save()
+
+# --- later, in the worker process ---
+service = TaskService(store=JsonStore("tasks.json"))
+service.restore()
+Worker(service.queue, {"send_report": print}).run_pending()
+```
+
+```
+Traceback (most recent call last):
+  File "repro.py", line 13, in <module>
+    Worker(service.queue, {"send_report": print}).run_pending()
+  File "taskq/worker.py", line 77, in run_pending
+    if self._is_due(task, now):
+       ^^^^^^^^^^^^^^^^^^^^^^^
+  File "taskq/worker.py", line 66, in _is_due
+    return task.next_run is None or task.next_run <= now
+                                    ^^^^^^^^^^^^^^^^^^^^
+TypeError: '<=' not supported between instances of 'str' and 'datetime.datetime'
+```
+
+Tasks without a scheduled time restore and run fine. This hits us on every deploy, because any task that was waiting for a retry when the old process stopped crashes the new worker.
+
+Expected: a restored task is identical to the one that was saved, and the worker runs it once it is due (and leaves it alone until then).
+'''
+
+[[inject]]
+file = "taskq/task.py"
+search = '''
+            next_run=_parse_dt(data.get("next_run")),
+'''
+replace = '''
+            next_run=data.get("next_run"),
+'''
+
+[expected]
+files = ["taskq/task.py"]
+symbols = ["Task.from_dict"]
+forbidden_paths = []
+max_diff_lines = 15

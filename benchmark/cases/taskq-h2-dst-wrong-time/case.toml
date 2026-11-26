@@ -1,0 +1,22 @@
+id = "taskq-h2-dst-wrong-time"
+fixture = "taskq"
+difficulty = "hard"
+kind = "triage"
+expected_classification = "needs_info"
+root_cause_category = "unclear"
+notes = "Deliberately vague report: no version, no timezone, no schedule definition, no expected vs. actual times, no repro. The fixture has no known scheduling bug (all internal times are aware UTC by default). The right outcome is to ask for details (taskq version, how schedules/run_at are created, naive vs aware datetimes, server TZ, concrete expected/actual timestamps), not to patch schedule.py or clock.py."
+
+[issue]
+number = 121
+title = "Tasks run at the wrong time sometimes"
+labels = ["bug"]
+body = '''
+Some of our scheduled tasks run at the wrong time. It doesn't happen always, only sometimes. Could it be DST? We noticed it a while ago but didn't have time to report it until now.
+
+Can someone take a look? Thanks
+'''
+
+[expected]
+files = []
+symbols = []
+forbidden_paths = []

@@ -1,0 +1,48 @@
+id = "shopcart-e1-shipping-boundary"
+fixture = "shopcart"
+difficulty = "easy"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "off_by_one"
+notes = "Reference fix: in shopcart/shipping.py tier_price_cents, compare with `weight_kg <= limit` instead of `<` so tier limits are inclusive (1-line change)."
+
+[issue]
+number = 101
+title = "5 kg parcel charged the 20 kg shipping rate"
+labels = ["bug"]
+body = '''
+A customer emailed us because their order (two 2.5 kg bags of coffee beans, so exactly 5.0 kg) was charged $14.99 for shipping. Our shipping info page says "up to 5 kg: $8.99", which is also what the rate table in the README says.
+
+I tried a few weights in a shell:
+
+```
+>>> from shopcart.shipping import shipping_cost_cents
+>>> shipping_cost_cents(4.9)
+899
+>>> shipping_cost_cents(5.0)
+1499
+>>> shipping_cost_cents(1.0)
+899
+>>> shipping_cost_cents(0.8)
+499
+```
+
+So any parcel that lands exactly on a tier limit gets bumped into the next, more expensive tier. 1 kg should cost $4.99 and 5 kg should cost $8.99 ("up to" includes the limit).
+
+shopcart 1.4.2, Python 3.11
+'''
+
+[[inject]]
+file = "shopcart/shipping.py"
+search = '''
+        if weight_kg <= limit:
+'''
+replace = '''
+        if weight_kg < limit:
+'''
+
+[expected]
+files = ["shopcart/shipping.py"]
+symbols = ["tier_price_cents"]
+forbidden_paths = ["shopcart/payments/**", "shopcart/migrations/**"]
+max_diff_lines = 10

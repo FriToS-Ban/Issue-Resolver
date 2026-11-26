@@ -1,0 +1,56 @@
+id = "taskq-e3-from-dict-missing-tags"
+fixture = "taskq"
+difficulty = "easy"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "null_handling"
+notes = "Reference fix: in taskq/task.py Task.from_dict, treat 'tags' as optional: tags=list(data.get('tags') or [])."
+
+[issue]
+number = 109
+title = "KeyError: 'tags' when restoring tasks saved by an older version"
+labels = ["bug"]
+body = '''
+After upgrading from 0.3.2 to 0.6.0 our worker process fails on startup. It restores the task file that the old version wrote, and that file predates tags:
+
+```
+Traceback (most recent call last):
+  File "worker_main.py", line 8, in <module>
+    service.restore()
+  File "taskq/api.py", line 102, in restore
+    loaded = self.store.load()
+             ^^^^^^^^^^^^^^^^^
+  File "taskq/storage.py", line 41, in load
+    return [Task.from_dict(record) for record in records]
+            ^^^^^^^^^^^^^^^^^^^^^^
+  File "taskq/task.py", line 76, in from_dict
+    tags=list(data["tags"]),
+              ~~~~^^^^^^^^
+KeyError: 'tags'
+```
+
+The file looks like this (bare list, the old format):
+
+```json
+[
+  {"id": "a1f3c9e2b7d4", "name": "send_digest", "payload": {"user": 42}, "priority": 1, "status": "pending", "attempts": 0}
+]
+```
+
+`tags` is optional everywhere else (it defaults to an empty list on `Task`), so I'd expect records without it, or with `"tags": null`, to load with `tags == []` instead of crashing.
+'''
+
+[[inject]]
+file = "taskq/task.py"
+search = '''
+            tags=list(data.get("tags") or []),
+'''
+replace = '''
+            tags=list(data["tags"]),
+'''
+
+[expected]
+files = ["taskq/task.py"]
+symbols = ["Task.from_dict"]
+forbidden_paths = []
+max_diff_lines = 10

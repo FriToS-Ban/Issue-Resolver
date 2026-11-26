@@ -1,0 +1,74 @@
+id = "shopcart-h1-reservation-leak-on-payment-failure"
+fixture = "shopcart"
+difficulty = "hard"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "logic_error"
+notes = "Reference fix: in Checkout.place_order (shopcart/checkout.py) wrap the gateway.charge call in try/except PaymentError, release every reserved line via _release_all, then re-raise. Reservation must still happen before the charge (no charge when out of stock). The gateway (shopcart/payments/**) is off-limits and correct."
+
+[issue]
+number = 117
+title = "Stock stays reserved forever after a declined payment"
+labels = ["bug", "inventory", "checkout"]
+body = '''
+We keep seeing products shown as sold out on the storefront while the warehouse count says we have plenty. It turns out every failed payment leaves the units it was going to buy reserved, and nothing ever gives them back.
+
+Repro:
+
+```python
+from decimal import Decimal
+from shopcart import Cart, Checkout, Product
+from shopcart.inventory import Inventory
+from shopcart.payments.gateway import FakeGateway, PaymentDeclined
+
+inventory = Inventory({"MUG-01": 3})
+checkout = Checkout(inventory, FakeGateway())
+cart = Cart()
+cart.add(Product("MUG-01", "Enamel mug", Decimal("12.50"), weight_kg=0.4), 2)
+
+try:
+    checkout.place_order(cart, "tok_declined")
+except PaymentDeclined:
+    pass
+
+print(inventory.available("MUG-01"), inventory.reserved("MUG-01"))   # 1 2   (expected 3 0)
+```
+
+After a customer retries with another card that's declined too, the product can't be bought by anyone: `place_order` raises `OutOfStock` even though nothing was sold. The same happens when the gateway times out (`GatewayUnavailable`) instead of declining.
+
+Expected: if taking the payment fails for whatever reason, all stock reserved for that order (every line, not just the first) is released, and the payment error is still raised to the caller so the shop can show its "payment failed" page. Successful orders and the out-of-stock path (which never charges the customer) should keep working as they do today.
+
+Note: `shopcart/payments/` is our payment provider's client and we're not allowed to modify it; it behaves as documented (it raises on decline/timeout).
+'''
+
+[[inject]]
+file = "shopcart/checkout.py"
+search = '''
+from shopcart.payments.gateway import ChargeReceipt, PaymentError
+'''
+replace = '''
+from shopcart.payments.gateway import ChargeReceipt
+'''
+
+[[inject]]
+file = "shopcart/checkout.py"
+search = '''
+        reserved = self._reserve_all(cart)
+        try:
+            receipt = self.gateway.charge(payment_token, breakdown.total_cents, reference=order_id)
+        except PaymentError:
+            self._release_all(reserved)
+            raise
+        self._commit_all(reserved)
+'''
+replace = '''
+        reserved = self._reserve_all(cart)
+        receipt = self.gateway.charge(payment_token, breakdown.total_cents, reference=order_id)
+        self._commit_all(reserved)
+'''
+
+[expected]
+files = ["shopcart/checkout.py"]
+symbols = ["Checkout.place_order", "Checkout._release_all", "Inventory.release"]
+forbidden_paths = ["shopcart/payments/**", "shopcart/migrations/**"]
+max_diff_lines = 30

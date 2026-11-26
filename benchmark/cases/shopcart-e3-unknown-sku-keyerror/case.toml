@@ -1,0 +1,54 @@
+id = "shopcart-e3-unknown-sku-keyerror"
+fixture = "shopcart"
+difficulty = "easy"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "null_handling"
+notes = "Reference fix: Inventory.available uses self._on_hand.get(sku, 0) (or self.on_hand(sku)) instead of indexing, so unknown SKUs report 0 and reserve() raises OutOfStock."
+
+[issue]
+number = 103
+title = "Inventory.available() raises KeyError for SKUs that were never stocked"
+labels = ["bug"]
+body = '''
+Our product pages show an "only N left" badge using `Inventory.available(sku)`. For products that exist in the catalogue but have never had stock received (pre-orders, new arrivals), the page crashes with a 500.
+
+Minimal repro:
+
+```python
+from shopcart.inventory import Inventory
+
+inventory = Inventory({"MUG-01": 4, "TEE-M": 12})
+for sku in ["MUG-01", "TEE-XL"]:
+    print(sku, inventory.available(sku))
+```
+
+```
+MUG-01 4
+Traceback (most recent call last):
+  File "repro.py", line 5, in <module>
+    print(sku, inventory.available(sku))
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "shopcart/inventory.py", line 54, in available
+    return self._on_hand[sku] - self._reserved.get(sku, 0)
+           ~~~~~~~~~~~~~^^^^^
+KeyError: 'TEE-XL'
+```
+
+I'd expect `available()` to return 0 for a SKU it has never seen (it isn't available, after all), the same way `on_hand()` and `reserved()` already return 0. Trying to check out such a product should fail with the usual `OutOfStock` error rather than a KeyError, which is what happens now if the product makes it into a cart.
+'''
+
+[[inject]]
+file = "shopcart/inventory.py"
+search = '''
+        return self._on_hand.get(sku, 0) - self._reserved.get(sku, 0)
+'''
+replace = '''
+        return self._on_hand[sku] - self._reserved.get(sku, 0)
+'''
+
+[expected]
+files = ["shopcart/inventory.py"]
+symbols = ["Inventory.available"]
+forbidden_paths = ["shopcart/payments/**", "shopcart/migrations/**"]
+max_diff_lines = 10

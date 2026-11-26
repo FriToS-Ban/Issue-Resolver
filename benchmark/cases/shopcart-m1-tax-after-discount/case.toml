@@ -1,0 +1,63 @@
+id = "shopcart-m1-tax-after-discount"
+fixture = "shopcart"
+difficulty = "medium"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "ordering"
+notes = "Reference fix: in Checkout.quote (shopcart/checkout.py) compute the discount first and pass the discounted amount to pricing.tax_cents (subtotal - discount). pricing.tax_cents itself is correct."
+
+[issue]
+number = 110
+title = "Sales tax is charged on the pre-discount price"
+labels = ["bug", "billing"]
+body = '''
+When an order has a discount, the tax is calculated as if no discount had been applied, so every discounted order is overcharged.
+
+Example with 8% tax and a 10% coupon:
+
+```
+2 x Desk lamp @ $50.00     subtotal  $100.00
+coupon WELCOME10           discount  -$10.00
+                           tax         $8.00   <-- should be $7.20
+                           shipping    $0.00
+                           total      $98.00   <-- should be $97.20
+```
+
+Repro:
+
+```python
+from decimal import Decimal
+from shopcart import Cart, Checkout, Product
+from shopcart.discounts import Coupon, CouponBook
+from shopcart.inventory import Inventory
+from shopcart.payments.gateway import FakeGateway
+
+checkout = Checkout(
+    Inventory({"LAMP-1": 5}),
+    FakeGateway(),
+    coupons=CouponBook([Coupon("WELCOME10", 10)]),
+    tax_rate="0.08",
+)
+cart = Cart()
+cart.add(Product("LAMP-1", "Desk lamp", Decimal("50.00"), weight_kg=1.2), 2)
+print(checkout.quote(cart, "WELCOME10"))
+# PriceBreakdown(subtotal_cents=10000, discount_cents=1000, tax_cents=800, shipping_cents=0)
+```
+
+The README says "Sales tax is charged on the merchandise subtotal after discounts", and that's also what our accountant expects. The same thing happens with manual staff discounts. The amount actually charged by `place_order` is wrong too, not just the quote.
+'''
+
+[[inject]]
+file = "shopcart/checkout.py"
+search = '''
+        tax = pricing.tax_cents(subtotal - discount, self.tax_rate)
+'''
+replace = '''
+        tax = pricing.tax_cents(subtotal, self.tax_rate)
+'''
+
+[expected]
+files = ["shopcart/checkout.py"]
+symbols = ["Checkout.quote", "tax_cents"]
+forbidden_paths = ["shopcart/payments/**", "shopcart/migrations/**"]
+max_diff_lines = 12

@@ -1,0 +1,44 @@
+id = "taskq-e1-interval-seconds-unit"
+fixture = "taskq"
+difficulty = "easy"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "logic_error"
+notes = "Reference fix: in taskq/schedule.py the _UNIT_SECONDS table maps the 's' suffix to 60; it must be 1 (1-line change)."
+
+[issue]
+number = 107
+title = "\"90s\" interval is treated as 90 minutes"
+labels = ["bug"]
+body = '''
+I set up a health-check schedule to repeat every `"90s"`; it ran once and then didn't run again for an hour and a half.
+
+```
+>>> from taskq.schedule import parse_interval
+>>> parse_interval("90s")
+datetime.timedelta(seconds=5400)
+>>> parse_interval("90sec")
+datetime.timedelta(seconds=90)
+>>> parse_interval("1m30s")
+datetime.timedelta(seconds=1860)
+```
+
+`"90sec"` and `"90 seconds"` work, but the short `s` suffix, which is the form the README uses, behaves like minutes. Expected `parse_interval("90s") == timedelta(seconds=90)` and `"1m30s"` to be 90 seconds as well.
+
+taskq 0.6.0
+'''
+
+[[inject]]
+file = "taskq/schedule.py"
+search = '''
+    "s": 1,
+'''
+replace = '''
+    "s": 60,
+'''
+
+[expected]
+files = ["taskq/schedule.py"]
+symbols = ["parse_interval"]
+forbidden_paths = []
+max_diff_lines = 10

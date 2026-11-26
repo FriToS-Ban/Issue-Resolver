@@ -1,0 +1,49 @@
+id = "shopcart-m3-manager-discount-limit"
+fixture = "shopcart"
+difficulty = "medium"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "off_by_one"
+requires_manual_review = true
+notes = "Reference fix: shopcart/auth/permissions.py can_apply_discount must use `pct <= max_discount_percent(user)` (inclusive limit). The change is a 1-line boundary fix but lives in an authorization path, so the run is expected to be flagged for human review rather than auto-merged."
+
+[issue]
+number = 116
+title = "Managers can't apply a 20% discount even though that's their limit"
+labels = ["bug", "pos"]
+body = '''
+Store managers are allowed to give manual discounts of up to 20% at the till (it's in the README and in our staff handbook), but a 20% discount is refused:
+
+```
+>>> checkout.quote(cart, staff=User("priya", Role.MANAGER), manual_discount=20)
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "shopcart/checkout.py", line 87, in quote
+    percent = self._discount_percent(subtotal, coupon_code, staff, manual_discount)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "shopcart/checkout.py", line 115, in _discount_percent
+    require_discount(staff, manual)
+  File "shopcart/auth/permissions.py", line 66, in require_discount
+    raise PermissionDenied(
+shopcart.auth.permissions.PermissionDenied: priya (manager) may not apply a 20% discount; the limit is 20%
+```
+
+The error message itself says the limit is 20%. 19% and 19.99% work. Clerks have the same problem at exactly 10%.
+
+Expected: the limit is inclusive, i.e. a manager may apply anything up to and including 20%, a clerk up to and including 10%. Anything above the limit should of course still be refused.
+'''
+
+[[inject]]
+file = "shopcart/auth/permissions.py"
+search = '''
+    return pct <= max_discount_percent(user)
+'''
+replace = '''
+    return pct < max_discount_percent(user)
+'''
+
+[expected]
+files = ["shopcart/auth/permissions.py"]
+symbols = ["can_apply_discount"]
+forbidden_paths = ["shopcart/payments/**", "shopcart/migrations/**"]
+max_diff_lines = 10

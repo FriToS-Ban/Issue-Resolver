@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "textkit"
+version = "0.9.1"
+description = "Small, dependency-free text utilities: slugs, wrapping, tokens, templates, CSV lines"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+textkit = "textkit.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["textkit*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

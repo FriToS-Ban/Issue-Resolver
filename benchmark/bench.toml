@@ -1,0 +1,39 @@
+# benchmark/bench.toml — configuration used by `fix-issue bench run` (no secrets here).
+#
+# The API key is read from the environment or a local .env file:
+#   NVIDIA_API_KEY=...   (used automatically because base_url points at NVIDIA NIM)
+# or LLM_API_KEY=... for any other provider.
+
+[llm]
+provider    = "openai_compatible"
+base_url    = "https://integrate.api.nvidia.com/v1"
+model       = "nvidia/nemotron-3-ultra-550b-a55b"
+temperature = 0.0          # as deterministic as the provider allows
+max_tokens  = 8192
+
+[critic]
+# A different model family reviews the patch, so the critique is not the implementer grading itself.
+model = "mistralai/mistral-large-4-1t-a52b"
+
+[retrieval]
+embedding_backend = "openai_compatible"
+embedding_model   = "nvidia/nemotron-3.5-embed-1b"
+
+[limits]
+max_diff_lines       = 150
+max_retries          = 3
+relevant_files       = 5
+test_timeout_seconds = 180
+
+[pipeline]
+planning            = true
+critique            = true
+max_critique_rounds = 1
+max_plan_revisions  = 1
+max_context_chars   = 60000
+
+[validation]
+run_linters           = true
+run_type_checkers     = true
+run_formatters        = true
+allow_project_scripts = false

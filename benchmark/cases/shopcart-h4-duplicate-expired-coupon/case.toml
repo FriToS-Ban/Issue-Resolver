@@ -1,0 +1,60 @@
+id = "shopcart-h4-duplicate-expired-coupon"
+fixture = "shopcart"
+difficulty = "hard"
+kind = "triage"
+expected_classification = "duplicate"
+root_cause_category = "logic_error"
+notes = "Same symptom and root cause as resolved issue #88 (expired coupons accepted; the expiry check in utils/dates.is_expired). The code state carries the same injected bug as shopcart-m2 so the report is reproducible, but the expected outcome is to classify it as a duplicate of #88 rather than to produce a new patch. #79 shares vocabulary (coupon codes) but is unrelated; #85 is unrelated."
+
+[issue]
+number = 123
+title = "SUMMER20 coupon still gives 20% off after it ended"
+labels = ["bug"]
+body = '''
+Our summer sale coupon `SUMMER20` (created with `expires_on="2024-08-31"`) is still accepted at checkout in September and customers are getting 20% off their orders. The end date shows correctly in our admin, it just doesn't seem to be enforced.
+
+Can expired coupons be made to stop working? shopcart 1.4.2.
+'''
+
+[[recent_resolved]]
+number = 88
+title = "Expired coupon codes are still accepted at checkout"
+body = '''
+Coupons keep applying their discount after their `expires_on` date. Example: SPRING15 has expires_on 2024-04-30 and was still accepted by `Checkout.quote()` / `place_order()` on 2024-05-20; `CouponBook.active()` also listed it. Expected `CouponExpired`.
+
+Root cause was the expiry comparison used by `CouponBook.validate` (in the shared date helpers), which never reported anything as expired. Fixed and covered by tests for "last valid day", "one day after" and "long after" expiry.
+'''
+state = "closed"
+resolved_by = "PR #91"
+
+[[recent_resolved]]
+number = 79
+title = "Coupon codes with trailing spaces are rejected as unknown"
+body = '''
+Customers who paste a code like "WELCOME10 " from our newsletter get UnknownCoupon. Codes should be matched case-insensitively and with surrounding whitespace ignored. Fixed by normalising codes in CouponBook.get/validate/redeem.
+'''
+state = "closed"
+resolved_by = "PR #80"
+
+[[recent_resolved]]
+number = 85
+title = "Low-stock report lists SKUs that are still well stocked"
+body = '''
+`Inventory.low_stock()` compared on-hand quantity instead of available quantity, so heavily reserved items were missing from the report and others showed up wrongly. Now uses available stock.
+'''
+state = "closed"
+resolved_by = "PR #87"
+
+[[inject]]
+file = "shopcart/utils/dates.py"
+search = '''
+    return remaining.total_seconds() < 0
+'''
+replace = '''
+    return remaining.seconds < 0
+'''
+
+[expected]
+files = []
+symbols = ["is_expired"]
+forbidden_paths = ["shopcart/payments/**", "shopcart/migrations/**"]

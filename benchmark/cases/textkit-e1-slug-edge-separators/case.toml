@@ -1,0 +1,42 @@
+id = "textkit-e1-slug-edge-separators"
+fixture = "textkit"
+difficulty = "easy"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "logic_error"
+notes = "Reference fix: in textkit/slug.py slugify, strip the separator from both ends after substituting non-alphanumerics (value = value.strip(separator)) before applying max_length."
+
+[issue]
+number = 104
+title = "slugify leaves dashes at the start/end of the slug"
+labels = ["bug"]
+body = '''
+When the input has leading/trailing whitespace or punctuation, the slug starts or ends with a separator:
+
+```
+>>> from textkit import slugify
+>>> slugify("  Hello World!  ")
+'-hello-world-'
+>>> slugify("(Draft) Release notes")
+'-draft-release-notes'
+>>> slugify("  Hi there  ", separator="_")
+'_hi_there_'
+```
+
+We build article URLs from user-entered titles, so stray spaces and punctuation at the ends are very common, and we end up with URLs like `/blog/-hello-world-`. A slug should never begin or end with the separator: expected `'hello-world'`, `'draft-release-notes'` and `'hi_there'`.
+
+textkit 0.9.1
+'''
+
+[[inject]]
+file = "textkit/slug.py"
+search = '''
+    value = value.strip(separator)
+'''
+replace = ''
+
+[expected]
+files = ["textkit/slug.py"]
+symbols = ["slugify"]
+forbidden_paths = []
+max_diff_lines = 10

@@ -1,0 +1,95 @@
+id = "textkit-h1-template-escapes-and-missing-keys"
+fixture = "textkit"
+difficulty = "hard"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "missing_feature"
+notes = "Reference fix (textkit/template.py): extend the token regex with `\\{\\{|\\}\\}` alternatives that render as literal braces, make placeholders()/missing_keys() skip them, and in render() catch the KeyError from _lookup and raise textkit.errors.TemplateError (already defined, subclass of TextkitError) whose message names the full dotted placeholder. errors.py and cli.py need no changes."
+
+[issue]
+number = 119
+title = "Templates: no way to write literal braces, and missing values raise a bare KeyError"
+labels = ["bug", "enhancement"]
+body = '''
+Two problems with `textkit.render` that are biting us now that we generate small JSON and CSS snippets from templates.
+
+**1. Literal braces.** There is no way to output a `{` or `}`. The usual `str.format` convention of doubling them doesn't work:
+
+```
+>>> from textkit import render
+>>> render('{{"id": {id}}}', id=5)
+'{{"id": 5}}'
+>>> render("{{name}}", name="x")
+'{x}'
+```
+
+Expected `'{"id": 5}'` and `'{name}'` (the doubled braces being literal text), the same as `str.format` would give. `placeholders()` and `missing_keys()` should also not report names that only appear inside escaped braces.
+
+**2. Missing values.** When a value is missing, the error is a bare `KeyError` that only contains the last segment of the name, which is useless in our logs, and the `textkit render` command dumps a traceback instead of printing an error:
+
+```
+>>> render("Order {order.id} shipped to {customer}", order={"status": "sent"}, customer="Ada")
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+  File "textkit/template.py", line 40, in render
+    return _TOKEN_RE.sub(substitute, template)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "textkit/template.py", line 38, in substitute
+    return str(_lookup(data, match.group(1)))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "textkit/template.py", line 19, in _lookup
+    value = value[part]
+            ~~~~~^^^^^^
+KeyError: 'id'
+```
+
+We wrap all textkit calls in `except TextkitError`, and the CLI already turns `TextkitError` into a clean `textkit: error: ...` message with exit code 2. Missing values should raise textkit's own `TemplateError`, and the message should name the full placeholder that couldn't be filled (`order.id` here, not just `id`).
+'''
+
+[[inject]]
+file = "textkit/template.py"
+search = '''
+mappings and objects.  Literal braces are written doubled: ``{{`` and ``}}``.
+'''
+replace = '''
+mappings and objects.
+'''
+
+[[inject]]
+file = "textkit/template.py"
+search = '''
+from textkit.errors import TemplateError
+
+'''
+replace = ''
+
+[[inject]]
+file = "textkit/template.py"
+search = '_TOKEN_RE = re.compile(r"\{\{|\}\}|\{('
+replace = '_TOKEN_RE = re.compile(r"\{('
+
+[[inject]]
+file = "textkit/template.py"
+search = '''
+    def substitute(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if token == "{{":
+            return "{"
+        if token == "}}":
+            return "}"
+        key = match.group(1)
+        try:
+            return str(_lookup(data, key))
+        except KeyError:
+            raise TemplateError(f"no value for placeholder {{{key}}}", key=key) from None
+'''
+replace = '''
+    def substitute(match: re.Match[str]) -> str:
+        return str(_lookup(data, match.group(1)))
+'''
+
+[expected]
+files = ["textkit/template.py"]
+symbols = ["render", "placeholders", "TemplateError"]
+forbidden_paths = []
+max_diff_lines = 45

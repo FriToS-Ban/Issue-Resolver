@@ -1,0 +1,43 @@
+id = "textkit-m1-top-words-normalization"
+fixture = "textkit"
+difficulty = "medium"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "logic_error"
+notes = "Reference fix: textkit/tokenize.py word_tokens splits on whitespace and only strips '.!?', so other punctuation (commas, quotes, brackets, colons) stays attached to words. Restore regex tokenisation (_WORD_RE.findall on the quote-normalised text). stats.py functions are correct and only consume word_tokens."
+
+[issue]
+number = 112
+title = "top_words counts \"Hello,\" and \"hello\" as different words"
+labels = ["bug"]
+body = '''
+We run word statistics over customer feedback and get duplicate entries for the same word whenever punctuation is attached to it:
+
+```
+>>> from textkit import top_words, unique_words
+>>> top_words("Hello, world! Hello again. hello?", n=3)
+[('hello', 2), ('again', 1), ('hello,', 1)]
+>>> unique_words('He said "stop", then stop.')
+['"stop",', 'he', 'said', 'stop', 'then']
+```
+
+Expected `[('hello', 3), ('again', 1), ('world', 1)]` and `['he', 'said', 'stop', 'then']`. Case is already being ignored correctly ("Hello" and "hello" are merged), it's only the punctuation. `word_count` gives the right number, but everything that compares or counts distinct words (`top_words`, `word_frequencies`, `unique_words`, and the `textkit stats` command) is off. Phrase n-grams built from `word_tokens` have the commas glued on as well.
+
+Apostrophes inside words should of course stay, `don't` is one word.
+'''
+
+[[inject]]
+file = "textkit/tokenize.py"
+search = '''
+    tokens = _WORD_RE.findall(normalize_quotes(text))
+'''
+replace = '''
+    tokens = [tok.strip(".!?") for tok in normalize_quotes(text).split()]
+    tokens = [tok for tok in tokens if tok]
+'''
+
+[expected]
+files = ["textkit/tokenize.py"]
+symbols = ["word_tokens"]
+forbidden_paths = []
+max_diff_lines = 15

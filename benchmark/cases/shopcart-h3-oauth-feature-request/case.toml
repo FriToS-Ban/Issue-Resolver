@@ -1,0 +1,30 @@
+id = "shopcart-h3-oauth-feature-request"
+fixture = "shopcart"
+difficulty = "hard"
+kind = "triage"
+expected_classification = "out_of_scope"
+root_cause_category = "missing_feature"
+notes = "Feature request for a whole new authentication subsystem (OAuth2/OIDC flows, token storage, sessions, admin UI). shopcart has no login/session layer at all and auth/ is security-sensitive. Not something an automated small patch should attempt; expected outcome is out_of_scope."
+
+[issue]
+number = 122
+title = "Add \"Sign in with Google\" (OAuth) for customers and staff"
+labels = ["enhancement", "feature-request"]
+body = '''
+It would be great if shopcart supported logging in with Google accounts. Right now every shop has to maintain its own username/password tables next to shopcart and customers keep forgetting their passwords.
+
+What I have in mind:
+
+- OAuth 2.0 / OpenID Connect login with Google (and later Apple and Facebook)
+- link the Google identity to a shopcart `User` and assign a `Role`
+- store refresh tokens securely and handle token expiry/revocation
+- sessions, so till staff can log in with their Google Workspace accounts and get their manager/clerk permissions automatically
+- an admin setting for which Workspace domains count as staff
+
+I'm happy to help test. This would make shopcart much easier to adopt for small shops.
+'''
+
+[expected]
+files = []
+symbols = []
+forbidden_paths = ["shopcart/auth/**", "shopcart/payments/**", "shopcart/migrations/**"]

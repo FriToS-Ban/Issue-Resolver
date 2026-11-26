@@ -1,0 +1,59 @@
+id = "shopcart-e2-negative-money-format"
+fixture = "shopcart"
+difficulty = "easy"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "formatting"
+notes = "Reference fix: in shopcart/utils/money.py format_money, compute the sign separately and divmod(abs(cents), 100), emitting f'{sign}{symbol}{whole:,}.{frac:02d}'. Using divmod on the negative value is also why -5.50 renders as $-6.50."
+
+[issue]
+number = 102
+title = "Negative amounts are formatted as $-5.00 (and some are off by a dollar)"
+labels = ["bug"]
+body = '''
+`format_money` puts the minus sign after the currency symbol:
+
+```
+>>> from shopcart.utils.money import format_money
+>>> format_money(-5)
+'$-5.00'
+```
+
+I'd expect `'-$5.00'`, which is how our accounting software and pretty much everything else writes negative amounts. It shows up on every receipt that has a discount, because the discount line is printed as a negative amount:
+
+```
+Subtotal  $50.00
+Discount  $-5.00
+```
+
+While testing this I noticed it's not only cosmetic. Amounts with cents come out wrong:
+
+```
+>>> format_money(-5.50)
+'$-6.50'
+>>> format_money(-0.25)
+'$-1.75'
+```
+
+so a $5.50 refund is displayed to the customer as $6.50.
+
+Expected `'-$5.00'`, `'-$5.50'` and `'-$0.25'`. Positive amounts look fine.
+'''
+
+[[inject]]
+file = "shopcart/utils/money.py"
+search = '''
+    sign = "-" if cents < 0 else ""
+    whole, frac = divmod(abs(cents), 100)
+    return f"{sign}{symbol}{whole:,}.{frac:02d}"
+'''
+replace = '''
+    whole, frac = divmod(cents, 100)
+    return f"{symbol}{whole:,}.{frac:02d}"
+'''
+
+[expected]
+files = ["shopcart/utils/money.py"]
+symbols = ["format_money"]
+forbidden_paths = ["shopcart/payments/**", "shopcart/migrations/**"]
+max_diff_lines = 15

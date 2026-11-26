@@ -1,0 +1,105 @@
+id = "textkit-m2-csv-quoted-fields"
+fixture = "textkit"
+difficulty = "medium"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "logic_error"
+notes = "Reference fix: rewrite textkit/csvio.py parse_csv_line as a small state machine: track in_quotes, treat delimiters inside quotes as data, turn a doubled quotechar inside quotes into one literal quote, raise CSVError on an unterminated quoted field. format_csv_line and read_rows are correct."
+
+[issue]
+number = 113
+title = "read_rows fails on quoted fields that contain commas"
+labels = ["bug", "csv"]
+body = '''
+Contacts exported from our CRM look like this (standard CSV, Excel and Python's `csv` module read it fine):
+
+```
+id,name,company,notes
+1,"Smith, John",Acme,"Prefers ""Jack"""
+2,Jane Doe,Initech,
+```
+
+Loading it with textkit fails:
+
+```
+>>> from textkit import read_rows, parse_csv_line
+>>> with open("contacts.csv", encoding="utf-8") as fh:
+...     rows = read_rows(fh)
+...
+Traceback (most recent call last):
+  File "<stdin>", line 2, in <module>
+  File "textkit/csvio.py", line 51, in read_rows
+    raise CSVError(
+textkit.errors.CSVError: line 2: expected 4 fields, got 5
+>>> parse_csv_line('1,"Smith, John",Acme,"Prefers ""Jack"""')
+['1', '"Smith', ' John"', 'Acme', 'Prefers ""Jack""']
+```
+
+The comma inside `"Smith, John"` is part of the field, not a separator, and a doubled `""` inside a quoted field is an escaped quote, so row 1 should be:
+
+```python
+{"id": "1", "name": "Smith, John", "company": "Acme", "notes": 'Prefers "Jack"'}
+```
+
+Lines we write ourselves with `format_csv_line` can't be read back either whenever a value contains a comma or a quote, so the two functions don't round-trip. A line with an opening quote that is never closed should be reported as an error rather than silently accepted.
+'''
+
+[[inject]]
+file = "textkit/csvio.py"
+search = '''
+def parse_csv_line(line: str, delimiter: str = ",", quotechar: str = '"') -> list[str]:
+    """Split one CSV record into fields.
+
+    Fields may be wrapped in ``quotechar``; a quoted field can contain the
+    delimiter, and a doubled quote character inside it stands for one literal
+    quote.
+    """
+    line = line.rstrip("\r\n")
+    fields: list[str] = []
+    buf: list[str] = []
+    in_quotes = False
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if in_quotes:
+            if ch == quotechar:
+                if i + 1 < len(line) and line[i + 1] == quotechar:
+                    buf.append(quotechar)
+                    i += 1
+                else:
+                    in_quotes = False
+            else:
+                buf.append(ch)
+        elif ch == quotechar:
+            in_quotes = True
+        elif ch == delimiter:
+            fields.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    if in_quotes:
+        raise CSVError(f"unterminated quoted field in {line!r}")
+    fields.append("".join(buf))
+    return fields
+'''
+replace = '''
+def parse_csv_line(line: str, delimiter: str = ",", quotechar: str = '"') -> list[str]:
+    """Split one CSV record into fields.
+
+    Fields may be wrapped in ``quotechar``.
+    """
+    line = line.rstrip("\r\n")
+    fields: list[str] = []
+    for raw in line.split(delimiter):
+        if len(raw) >= 2 and raw[0] == quotechar and raw[-1] == quotechar:
+            raw = raw[1:-1]
+        fields.append(raw)
+    return fields
+'''
+
+[expected]
+files = ["textkit/csvio.py"]
+symbols = ["parse_csv_line"]
+forbidden_paths = []
+max_diff_lines = 80

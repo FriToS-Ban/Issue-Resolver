@@ -1,0 +1,86 @@
+id = "shopcart-h2-cent-rounding-line-items"
+fixture = "shopcart"
+difficulty = "hard"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "arithmetic"
+notes = "Two defects. (1) shopcart/utils/money.py to_cents goes through float and round() (binary noise + banker's rounding): restore round_half_up(to_decimal(amount) * 100). (2) shopcart/pricing.py subtotal_cents converts the raw sum of unit_price*qty once instead of summing per-line rounded cents: restore sum(line_total_cents(item) for item in items). Both files must change for the hidden tests to pass."
+
+[issue]
+number = 118
+title = "Order totals are off by a cent with fractional unit prices"
+labels = ["bug", "billing"]
+body = '''
+We sell hardware by the piece and some unit prices have sub-cent precision (M4 screws are $0.335 each). Order totals regularly disagree with what our ERP calculates, usually by a cent or two, and the receipt lines don't add up to the subtotal printed underneath them.
+
+```python
+from decimal import Decimal
+from shopcart import Cart, Checkout, Product
+from shopcart.inventory import Inventory
+from shopcart.payments.gateway import FakeGateway
+
+cart = Cart()
+cart.add(Product("SCREW-M4", "M4 screw", Decimal("0.335")), 3)
+cart.add(Product("WASHER-M4", "M4 washer", Decimal("0.125")), 1)
+cart.add(Product("BOLT-M8", "M8 bolt", Decimal("1.255")), 1)
+
+checkout = Checkout(Inventory({"SCREW-M4": 100, "WASHER-M4": 100, "BOLT-M8": 100}), FakeGateway())
+order = checkout.place_order(cart, "tok_visa")
+```
+
+The receipt for that order:
+
+```
+Order ORD-00001
+3 x M4 screw  $1.00
+1 x M4 washer  $0.12
+1 x M8 bolt  $1.25
+Subtotal  $2.38
+Tax  $0.00
+Shipping  $0.00
+Total  $2.38
+```
+
+The three lines add up to $2.37, the subtotal says $2.38, and by our rule below it should be $2.40.
+
+```
+>>> format_money(Decimal("1.005"))
+'$1.00'
+>>> format_money(Decimal("0.125"))
+'$0.12'
+```
+
+Plain formatting is affected as well (expected `'$1.01'` and `'$0.13'`).
+
+The rule we need (agreed with finance, and it's what the ERP does):
+
+1. Each line total is `unit_price x quantity`, rounded half-up (exactly half a cent rounds up) to whole cents. So 3 x $0.335 = $1.005 is $1.01, 1 x $0.125 is $0.13, 1 x $1.255 is $1.26.
+2. The order subtotal is the sum of those rounded line totals, so the receipt always adds up. For the order above: $1.01 + $0.13 + $1.26 = $2.40.
+3. Amounts are handled as exact decimals / integer cents throughout; no binary floats on the way (1.005 -> 1.00 is the classic float symptom).
+
+Discounts and tax are then computed from that subtotal as they are now.
+'''
+
+[[inject]]
+file = "shopcart/utils/money.py"
+search = '''
+    return round_half_up(to_decimal(amount) * _HUNDRED)
+'''
+replace = '''
+    return int(round(float(amount) * 100))
+'''
+
+[[inject]]
+file = "shopcart/pricing.py"
+search = '''
+    return sum(line_total_cents(item) for item in items)
+'''
+replace = '''
+    return to_cents(sum(item.product.unit_price * item.quantity for item in items))
+'''
+
+[expected]
+files = ["shopcart/pricing.py", "shopcart/utils/money.py"]
+symbols = ["subtotal_cents", "line_total_cents", "to_cents"]
+forbidden_paths = ["shopcart/payments/**", "shopcart/migrations/**"]
+max_diff_lines = 30

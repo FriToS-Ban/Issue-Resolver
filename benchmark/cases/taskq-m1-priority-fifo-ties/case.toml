@@ -1,0 +1,66 @@
+id = "taskq-m1-priority-fifo-ties"
+fixture = "taskq"
+difficulty = "medium"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "ordering"
+notes = "Reference fix: TaskQueue.push (taskq/queue.py) breaks priority ties with task.id (random hex), so equal-priority tasks come out in id order. Use a monotonically increasing insertion counter (itertools.count) as the second heap key."
+
+[issue]
+number = 114
+title = "Tasks with the same priority don't run in submission order"
+labels = ["bug"]
+body = '''
+The README says "Tasks with the same priority run in the order they were submitted", but that's not what we see. We split a big import into chunks, submit them all at the default priority, and the worker processes them in a seemingly random order:
+
+```python
+from taskq.api import TaskService
+from taskq.worker import Worker
+
+service = TaskService()
+for chunk in range(1, 7):
+    service.submit("import_chunk", {"chunk": chunk})
+
+worker = Worker(service.queue, {"import_chunk": lambda p: print(p["chunk"], end=" ")})
+worker.run_pending()
+```
+
+```
+4 1 6 2 3 5
+```
+
+The order is different on every run. Expected `1 2 3 4 5 6` every time. Higher priorities do still go first; it's only tasks with equal priority that get scrambled. Our chunks depend on each other, so this breaks the import. Retried tasks that go back into the queue should also line up behind tasks that were already waiting at the same priority.
+'''
+
+[[inject]]
+file = "taskq/queue.py"
+search = '''
+import itertools
+'''
+replace = ''
+
+[[inject]]
+file = "taskq/queue.py"
+search = '''
+        self._heap: list[tuple[int, int, Task]] = []
+        self._counter = itertools.count()
+'''
+replace = '''
+        self._heap: list[tuple[int, str, Task]] = []
+'''
+
+[[inject]]
+file = "taskq/queue.py"
+search = '''
+        seq = next(self._counter)
+        heapq.heappush(self._heap, (-task.priority, seq, task))
+'''
+replace = '''
+        heapq.heappush(self._heap, (-task.priority, task.id, task))
+'''
+
+[expected]
+files = ["taskq/queue.py"]
+symbols = ["TaskQueue.push"]
+forbidden_paths = []
+max_diff_lines = 20

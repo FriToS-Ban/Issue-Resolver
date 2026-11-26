@@ -1,0 +1,42 @@
+id = "textkit-e3-title-case-first-word"
+fixture = "textkit"
+difficulty = "easy"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "off_by_one"
+notes = "Reference fix: in textkit/case.py title_case, only keep a small word lowercase when it is neither the first nor the last word (condition `0 < i < last`)."
+
+[issue]
+number = 106
+title = "title_case doesn't capitalise the first word when it's a small word"
+labels = ["bug"]
+body = '''
+```
+>>> from textkit import title_case
+>>> title_case("the lord of the rings")
+'the Lord of the Rings'
+>>> title_case("a tale of two cities")
+'a Tale of Two Cities'
+>>> title_case("of mice and men")
+'of Mice and Men'
+```
+
+The first word of a headline should always be capitalised, even if it's one of the small words ("the", "a", "of", ...). Expected `'The Lord of the Rings'`, `'A Tale of Two Cities'` and `'Of Mice and Men'`.
+
+Small words in the middle of the title should stay lowercase like they do now, and the last word is already capitalised correctly (`title_case("what are you looking at")` gives `'What Are You Looking At'`). We noticed because all our book pages starting with "The" look broken.
+'''
+
+[[inject]]
+file = "textkit/case.py"
+search = '''
+        if 0 < i < last and lower in small:
+'''
+replace = '''
+        if i < last and lower in small:
+'''
+
+[expected]
+files = ["textkit/case.py"]
+symbols = ["title_case"]
+forbidden_paths = []
+max_diff_lines = 10

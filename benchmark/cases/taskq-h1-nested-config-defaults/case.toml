@@ -1,0 +1,75 @@
+id = "taskq-h1-nested-config-defaults"
+fixture = "taskq"
+difficulty = "hard"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "config"
+notes = "Reference fix: taskq/config.py merge() does a shallow dict.update, so a partially specified section replaces the whole default section. Make it recursive (merge nested mappings, deep-copy values, never mutate DEFAULTS). The KeyError surfaces in RetryPolicy.from_config / Worker.from_config, but making those tolerate missing keys is not the fix: load_config() itself must return complete sections."
+
+[issue]
+number = 120
+title = "Worker fails to start when the config only sets some retry options"
+labels = ["bug", "config"]
+body = '''
+Following the README ("Every setting has a default; anything you specify overrides just that setting") our `taskq.toml` only contains the one thing we want to change:
+
+```toml
+[retry]
+max_attempts = 3
+```
+
+With that file the worker no longer starts:
+
+```python
+from taskq.config import load_config
+from taskq.worker import Worker
+
+config = load_config("taskq.toml")
+worker = Worker.from_config(config, handlers={"send_email": send_email})
+```
+
+```
+Traceback (most recent call last):
+  File "start_worker.py", line 5, in <module>
+    worker = Worker.from_config(config, handlers={"send_email": send_email})
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "taskq/worker.py", line 49, in from_config
+    retry = RetryPolicy.from_config(config["retry"])
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "taskq/retry.py", line 35, in from_config
+    base_delay=float(section["base_delay"]),
+                     ~~~~~~~^^^^^^^^^^^^^^
+KeyError: 'base_delay'
+```
+
+If I copy every key of `[retry]` from the README into my file it works. Same story with `[worker]`: setting only `batch_size = 50` makes `Worker.from_config` crash on the missing `name`. It looks like a section you mention in the file loses all of its other defaults.
+
+Expected: any setting not given in the file (or dict) keeps its default value, also inside sections, and `load_config()` returns the complete configuration so everything downstream can rely on it.
+'''
+
+[[inject]]
+file = "taskq/config.py"
+search = '''
+def merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+    """Recursively merge ``override`` into a copy of ``base``."""
+    result = copy.deepcopy(dict(base))
+    for key, value in override.items():
+        if isinstance(value, Mapping) and isinstance(result.get(key), Mapping):
+            result[key] = merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+'''
+replace = '''
+def merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge ``override`` into a copy of ``base``."""
+    result = copy.deepcopy(dict(base))
+    result.update(copy.deepcopy(dict(override)))
+    return result
+'''
+
+[expected]
+files = ["taskq/config.py"]
+symbols = ["load_config", "merge"]
+forbidden_paths = []
+max_diff_lines = 30

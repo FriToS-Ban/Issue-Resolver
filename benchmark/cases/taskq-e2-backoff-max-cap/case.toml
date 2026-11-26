@@ -1,0 +1,40 @@
+id = "taskq-e2-backoff-max-cap"
+fixture = "taskq"
+difficulty = "easy"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "arithmetic"
+notes = "Reference fix: in taskq/retry.py backoff_delay, apply max_delay to the final delay: min(base_delay * factor ** (attempt - 1), max_delay). The baseline caps only the growth factor, so the cap is wrong whenever base_delay != 1."
+
+[issue]
+number = 108
+title = "Retry backoff ignores max_delay when base_delay isn't 1"
+labels = ["bug"]
+body = '''
+With this policy I expected retries to be spaced at most 30 seconds apart:
+
+```
+>>> from taskq.retry import RetryPolicy, backoff_delays
+>>> backoff_delays(RetryPolicy(max_attempts=7, base_delay=5, factor=2, max_delay=30))
+[5, 10, 20, 40, 80, 150]
+```
+
+Expected `[5, 10, 20, 30, 30, 30]`; `max_delay` is supposed to be the upper bound on any single delay (the README says "never more than `max_delay`").
+
+With the default `base_delay=1` the cap appears to work, which is probably why nobody noticed. In production we run with `base_delay=15, max_delay=120` and failed webhook deliveries are being pushed out by more than an hour instead of two minutes.
+'''
+
+[[inject]]
+file = "taskq/retry.py"
+search = '''
+    return min(policy.base_delay * policy.factor ** (attempt - 1), policy.max_delay)
+'''
+replace = '''
+    return policy.base_delay * min(policy.factor ** (attempt - 1), policy.max_delay)
+'''
+
+[expected]
+files = ["taskq/retry.py"]
+symbols = ["backoff_delay"]
+forbidden_paths = []
+max_diff_lines = 10

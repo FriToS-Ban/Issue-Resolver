@@ -1,0 +1,60 @@
+id = "textkit-e2-truncate-length"
+fixture = "textkit"
+difficulty = "easy"
+kind = "fix"
+expected_classification = "fixable"
+root_cause_category = "off_by_one"
+visible_tests_fail_before = true
+notes = "Reference fix: in textkit/truncation.py truncate, reserve room for the ellipsis: cut = limit - len(ellipsis). The reporter's regression test is added to tests/ and must pass unchanged."
+
+[issue]
+number = 105
+title = "truncate() returns strings longer than the limit"
+labels = ["bug"]
+body = '''
+`truncate(text, limit)` should give me at most `limit` characters, but whenever it actually has to cut, the "..." is added on top of the limit:
+
+```
+>>> from textkit import truncate
+>>> s = truncate("The quick brown fox jumps over the lazy dog", 20)
+>>> s, len(s)
+('The quick brown fox...', 22)
+>>> len(truncate("x" * 200, 160))
+163
+```
+
+We use this for SMS previews with a hard 160 character limit and messages are getting rejected by the provider. The ellipsis has to fit inside the limit.
+
+I added a failing regression test in `tests/test_truncate_regression.py` (it passes if I hand-count the result to 20 chars).
+'''
+
+[[inject]]
+file = "textkit/truncation.py"
+search = '''
+    cut = limit - len(ellipsis)
+'''
+replace = '''
+    cut = limit
+'''
+
+[[add_files]]
+path = "tests/test_truncate_regression.py"
+content = '''
+from textkit.truncation import truncate
+
+
+def test_truncate_result_fits_in_limit():
+    out = truncate("The quick brown fox jumps over the lazy dog", 20)
+    assert len(out) <= 20
+    assert out.endswith("...")
+
+
+def test_truncate_sms_preview_limit():
+    assert len(truncate("x" * 200, 160)) == 160
+'''
+
+[expected]
+files = ["textkit/truncation.py"]
+symbols = ["truncate"]
+forbidden_paths = ["tests/test_truncate_regression.py"]
+max_diff_lines = 10
