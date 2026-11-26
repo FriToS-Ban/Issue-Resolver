@@ -335,3 +335,32 @@ The agent has **hard scope limits** that cannot be overridden by the LLM:
 ## License
 
 MIT
+
+---
+
+## Repository-aware pipeline (v2)
+
+`fix-issue owner/repo 123` now runs: control-plane triage → baseline tests → layered retrieval
+(explicit paths / stack frames → symbol definitions → callers/callees/imports → BM25 → embeddings,
+each file with its selection reasons) → validated implementation plan (with task decomposition) →
+structured SEARCH/REPLACE edits → path- and severity-aware scope guard → tests + the repo's own
+linters/type checkers (only *new* findings count) → recovery from the current file state → an
+independent review (APPROVED / NEEDS_REVISION / HUMAN_REVIEW / REJECTED) → PR with a structured
+explanation. `--profile baseline` runs the original pipeline.
+
+```bash
+fix-issue owner/repo 123 --dry-run                 # full pipeline, no push/PR/comments
+fix-issue owner/repo 123 --critic-model <model>    # reviewer from a different model family
+fix-issue runs list                                 # run history (~/.fix-issue/runs)
+fix-issue runs show <run-id> [--section retrieval]  # everything a run did, and why
+fix-issue rerun <run-id> --max-retries 5            # reproduce a run with new parameters
+
+fix-issue bench validate                            # prove all 23 cases are well-formed
+fix-issue bench retrieval --out benchmark/results/retrieval.json   # retrieval only, no LLM
+fix-issue bench run --profile baseline              # real LLM; config: benchmark/bench.toml
+fix-issue bench run --profile full
+fix-issue bench compare <baseline.json> <full.json>
+fix-issue bench review <results.json>               # record manual correctness verdicts
+```
+
+The benchmark key is read from `.env` (`NVIDIA_API_KEY=...`) or `LLM_API_KEY`.

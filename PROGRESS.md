@@ -56,3 +56,10 @@ The target repo has zero open issues, so there's nothing to run the pipeline aga
 
 
 
+- 2026-11-27: Repository-aware agent rebuild (branch `feat/repository-aware-agent`).
+  - New pipeline in `fix_issue/orchestrator.py`: control-plane triage → baseline tests → layered retrieval (`fix_issue/retrieval/`) → validated plan (`planner.py`) → step-wise structured SEARCH/REPLACE edits (`editing.py`) with cumulative path/severity-aware scope checks (`scope_guard.evaluate`) → tests + diff-aware linters (`validators.py`) → recovery with fresh file state (`recovery.py`) → independent critique with deterministic gates (`critic.py`) → PR with structured explanation (draft on HUMAN_REVIEW). `--profile baseline` keeps the original pipeline.
+  - Benchmark: `benchmark/` has 3 fixture repos and 23 cases (9 easy / 7 medium / 7 hard incl. 3 triage cases); `fix-issue bench validate` → 23/23 valid. Hidden tests separate "tests pass" from "issue fixed".
+  - Retrieval benchmark (no LLM, 20 fix cases, top-5): keyword recall@5 0.82 / MRR 0.50 → layered 0.93 / 0.71; symbol recall 0.00 → 0.69. Misses: shopcart-m2 (utils/dates.py, two hops), shopcart-h2 (pricing.py).
+  - Live smoke: 1 case (taskq-e1) on NIM `nvidia/nemotron-3-ultra-550b-a55b` + critic `mistralai/mistral-large-4-1t-a52b`: fixed, hidden tests pass, APPROVED, 1 attempt. The full 23-case baseline-vs-full benchmark has NOT been run yet.
+  - Environment: `deepseek-ai/deepseek-v4.1-flash` (in ~/.fix-issue.toml) is end-of-life on NIM and the key there is rejected (403); a working key lives in the gitignored `.env` (NVIDIA_API_KEY). Use Python 3.12 (`C:\Python312\python.exe`) — `python` on PATH is 3.15 without pytest.
+  - Next: `fix-issue bench run --profile baseline` and `--profile full` (≈15–25 min each), `fix-issue bench compare`, README rewrite, open the PR.
