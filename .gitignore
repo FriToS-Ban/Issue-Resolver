@@ -50,3 +50,8 @@ run_output*.log
 .idea/
 .DS_Store
 Thumbs.db
+
+# Benchmark fixtures intentionally ship repo-level scope files
+!benchmark/fixtures/**/.fix-issue-ignore
+!benchmark/fixtures/**/.fix-issue-scope.toml
+benchmark/results/runs/
