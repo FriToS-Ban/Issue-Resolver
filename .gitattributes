@@ -1,0 +1,2 @@
+# Benchmark fixtures/cases are injected by exact string replacement: keep LF everywhere.
+benchmark/** text eol=lf
