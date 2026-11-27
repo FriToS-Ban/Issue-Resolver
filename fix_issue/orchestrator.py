@@ -52,7 +52,7 @@ from fix_issue.redaction import neutralize, redact
 from fix_issue.repo_manager import ApplyError, GitWorkspace
 from fix_issue.retrieval import EmbeddingCache, RepositoryRetriever, build_embedder
 from fix_issue.run_history import RunRecorder
-from fix_issue.scope_guard import ScopeConstraints, ScopeViolation, evaluate as scope_evaluate
+from fix_issue.scope_guard import ScopeConstraints, ScopeViolation, evaluate as scope_evaluate, load_policy
 from fix_issue.test_runner import TestResult, run_tests
 from fix_issue.triage import TriageResult, apply_duplicate_evidence, derive_controls, triage_issue
 
@@ -274,6 +274,11 @@ class Orchestrator:
         root = Path(ws.root)
         title, body = issue.get("title", ""), issue.get("body") or ""
 
+        # Scope policy as of the base commit, read BEFORE any repository or model code runs, so
+        # nothing the run writes (tests, conftest, edits) can loosen it.
+        self._policy = load_policy(root, ws.base_ref)
+        rec.set("scope_policy", {"source": self._policy.source, "error": self._policy.read_error})
+
         # --- tooling + baseline ------------------------------------------------
         test_cmd = ws.detect_test_command()
         from fix_issue.validators import discover_tools, run_validators
@@ -424,9 +429,12 @@ class Orchestrator:
             scope_now = None
             if failure is None:
                 # The per-round guard checked each prospective edit; re-check the tree as it really is
-                # (tests may have written files). Enforced here, not only through the critic's gate G4.
+                # AFTER tests and linters ran (their code may have created or changed files). Enforced
+                # here, not only through the critic's gate G4.
+                diff = ws.diff()
+                att["diff"] = diff[:20000]
                 scope_now = scope_evaluate(diff, root, controls.max_diff_lines, constraints,
-                                           *self._contents_for(ws))
+                                           *self._contents_for(ws), policy=self._policy)
                 if not scope_now.ok:
                     failure = replace(analyze_scope_failure(scope_now), retry_reason=(
                         "The working tree's cumulative change violates the scope policy (see above). "
@@ -630,7 +638,7 @@ class Orchestrator:
         base, new = self._contents_for(ws, overrides=batch.new_contents)
         prospective = editing.unified_diff(base, new)
         report = scope_evaluate(prospective, root, constraints.max_diff_lines or self.cfg.limits.max_diff_lines,
-                                constraints, base, new)
+                                constraints, base, new, policy=getattr(self, "_policy", None))
         record["scope"] = report.to_dict()
         if not report.ok:
             return {"failure": analyze_scope_failure(report), "record": record}
@@ -703,6 +711,17 @@ class Orchestrator:
         if self.dry_run:
             ui.warn("[DRY RUN] PR not opened")
             return self._finish("dry_run", **common)
+        # Last gate before anything leaves the machine: commit_all stages the whole tree, so the
+        # tree must still be exactly the change that was validated and reviewed.
+        now = ws.diff()
+        if now != diff:
+            report = scope_evaluate(now, Path(ws.root), self.cfg.limits.max_diff_lines, None,
+                                    *self._contents_for(ws), policy=getattr(self, "_policy", None))
+            self.rec.event("publish", "working tree changed after review; not committing",
+                           ok=report.ok, findings=[f.message for f in report.findings][:10])
+            ws.reset_hard()
+            return self._finish("scope_violation", error="The working tree changed after validation and "
+                                "review; nothing was committed.", failure_category="scope_violation", **common)
         ui.step("Committing and pushing", self.branch)
         ws.commit_all(f"fix: resolve issue #{issue.get('number')} — {issue.get('title', '')[:60]}")
         ws.push_branch()

@@ -135,9 +135,11 @@ _PYTEST_FRAME = re.compile(r"^((?:[A-Za-z]:)?[^\s:]+\.py):(\d+):(?: in ([\w<>.]+
 def _output_frames(output: str, repo_files: list[str]) -> list[Frame]:
     """Project stack frames in test output, outermost first (native frames + pytest location lines)."""
     found = [(output.find(f.raw), f) for f in extract_mentions(output, repo_files).frames]
+    seen = {(f.path, f.line) for _, f in found}      # extract_mentions may already parse pytest lines
     for m in _PYTEST_FRAME.finditer(output):
         path = resolve_path(m.group(1), repo_files)
-        if path:
+        if path and (path, int(m.group(2))) not in seen:
+            seen.add((path, int(m.group(2))))
             found.append((m.start(), Frame(path, int(m.group(2)), m.group(3), m.group(0))))
     return [f for _, f in sorted(found, key=lambda pf: pf[0])]
 
@@ -179,13 +181,14 @@ def analyze_edit_failure(batch, workspace) -> FailureAnalysis:
     files: list[str] = []
     for o in failed:
         messages.append(f"[{o.error_kind}] {o.edit.file}: {o.error}")
-        if o.error_kind == "unsafe_path":
+        path = getattr(o, "safe_path", o.edit.file)
+        if o.error_kind == "unsafe_path" or path is None:
             continue                      # never read a path that was refused
-        files.append(o.edit.file)
-        current = _read(root, o.edit.file)
-        if current is not None and o.edit.file not in excerpts:
+        files.append(path)
+        current = _read(root, path)
+        if current is not None and path not in excerpts:
             center = (o.best_match or {}).get("start_line") or o.line
-            excerpts[o.edit.file] = _excerpt(current, center)
+            excerpts[path] = _excerpt(current, center)
     for path, err in syntax.items():
         messages.append(f"[syntax_error] {path}: {err} (the edits were NOT written)")
         files.append(path)
