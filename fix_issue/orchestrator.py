@@ -48,6 +48,7 @@ from fix_issue.recovery import (
     analyze_test_failure,
     analyze_validator_failure,
 )
+from fix_issue.redaction import neutralize, redact
 from fix_issue.repo_manager import ApplyError, GitWorkspace
 from fix_issue.retrieval import EmbeddingCache, RepositoryRetriever, build_embedder
 from fix_issue.run_history import RunRecorder
@@ -189,10 +190,14 @@ class Orchestrator:
     def run(self) -> PipelineResult:
         try:
             return self._run()
-        except (LLMError, OSError, RuntimeError, ValueError) as exc:
-            self.ui.fail(f"Pipeline error: {exc}")
-            self.rec.event("error", str(exc)[:1000])
-            return self._finish("error", error=f"{type(exc).__name__}: {exc}"[:2000])
+        except Exception as exc:  # any failure (git, GitHub API, provider quirks) is a recorded outcome
+            import traceback
+
+            msg = redact(f"{type(exc).__name__}: {exc}")[:2000]
+            self.ui.fail(f"Pipeline error: {msg}")
+            self.rec.event("error", msg[:1000])
+            self.rec.event("traceback", redact(traceback.format_exc())[-3000:])
+            return self._finish("error", error=msg)
 
     def _run(self) -> PipelineResult:
         cfg, ui, rec = self.cfg, self.ui, self.rec
@@ -219,7 +224,8 @@ class Orchestrator:
 
         ui.step("Triaging issue", "legacy classifier" if self.profile == "baseline" else "control signals")
         with tagged(self.llm, "triage"):
-            triage = triage_issue(self.llm, issue, readme, similar_issues=similar or None,
+            triage = triage_issue(self.llm, issue, readme,
+                                  similar_issues=similar if self.profile == "full" else None,
                                   legacy=self.profile == "baseline")
         if self.profile == "full":
             triage = apply_duplicate_evidence(triage, similar, cfg.pipeline.duplicate_threshold)
@@ -235,13 +241,14 @@ class Orchestrator:
 
         if triage.classification == "needs_info":
             q = triage.suggested_question or "Could you provide more details or a minimal reproduction case?"
-            self.publisher.comment(_needs_info_comment(q, self.source.repo, self.source.issue_number), "needs_info")
+            self.publisher.comment(_needs_info_comment(neutralize(q, 600), self.source.repo,
+                                                       self.source.issue_number), "needs_info")
             return self._finish("needs_info")
         if triage.classification in ("out_of_scope", "duplicate"):
             ui.warn(f"Skipping: classified as {triage.classification}. {triage.reason}")
             if triage.classification == "duplicate" and getattr(triage, "duplicate_of", None):
                 self.publisher.comment(
-                    f"This looks like a duplicate of #{triage.duplicate_of}: {triage.reason}\n\n"
+                    f"This looks like a duplicate of #{int(triage.duplicate_of)}: {neutralize(triage.reason, 600)}\n\n"
                     "*(Posted automatically by fix-issue.)*", "duplicate")
             return self._finish(triage.classification)
 
@@ -295,6 +302,7 @@ class Orchestrator:
                                         use_embeddings=embedder is not None)
         retrieval = retriever.retrieve(title, body, top_n=max(controls.context_files, cfg.limits.relevant_files))
         rec.set("retrieval", retrieval.to_dict())
+        rec.set("retrieval_initial", {"files": [{"path": f.path, "score": round(f.score, 3)} for f in retrieval.files]})
         for f in retrieval.files:
             ui.info(f"{f.path}  ({f.score:.2f}) — {'; '.join(f.reasons[:2])}")
         repo_files = retriever.index.all_paths
@@ -335,6 +343,10 @@ class Orchestrator:
         attempt = 0
         last_failure: FailureAnalysis | None = None
         final: dict[str, Any] | None = None
+        # The last change that passed validation and was sent for review. If a later revision round
+        # fails, this candidate is published for HUMAN_REVIEW instead of being thrown away.
+        candidate: dict[str, Any] | None = None
+        preexisting_retry_used = False
 
         while attempt < attempt_budget:
             attempt += 1
@@ -379,11 +391,25 @@ class Orchestrator:
                     tests = run_tests(test_cmd, root, cfg.limits.test_timeout_seconds,
                                       prefix=cfg.validation.sandbox_prefix or None)
                     att["tests"] = _test_dict(tests, baseline_failed)
+                    only_pre = _only_preexisting_failures(tests, baseline_failed)
                     if tests.passed:
                         ui.ok(f"tests passed ({tests.summary or f'{tests.duration_seconds:.1f}s'})")
+                    elif only_pre and preexisting_retry_used:
+                        # Unchanged pre-existing failures after a repair attempt: let the reviewer
+                        # and a human decide (the critic caps this at HUMAN_REVIEW, gate G2).
+                        ui.warn("only tests that already failed before the patch still fail: "
+                                + ", ".join(sorted(tests.failed_tests)[:5]))
+                        att["tests"]["only_preexisting_failures"] = True
                     else:
                         ui.fail(f"tests failed ({tests.summary})")
                         failure = analyze_test_failure(ws, tests, baseline_failed, plan.files_to_change, repo_files)
+                        if only_pre:
+                            preexisting_retry_used = True
+                            failure = replace(failure, retry_reason=(
+                                "No NEW test failures, but these tests already failed before your change and "
+                                f"still fail: {', '.join(sorted(tests.failed_tests)[:10])}. If they reproduce this "
+                                "issue, make them pass. If they are unrelated, keep your fix and say so in INTENT "
+                                "(do not re-emit edits that are already applied)."))
                 if failure is None and tools:
                     ui.step("Running linters / type checkers", ", ".join(t.name for t in tools))
                     validator_results = run_validators(root, tools, ws.changed_files(), ws.base_ref,
@@ -394,6 +420,18 @@ class Orchestrator:
                         ui.fail("new linter/type-checker findings")
                     else:
                         ui.ok("no new findings")
+
+            scope_now = None
+            if failure is None:
+                # The per-round guard checked each prospective edit; re-check the tree as it really is
+                # (tests may have written files). Enforced here, not only through the critic's gate G4.
+                scope_now = scope_evaluate(diff, root, controls.max_diff_lines, constraints,
+                                           *self._contents_for(ws))
+                if not scope_now.ok:
+                    failure = replace(analyze_scope_failure(scope_now), retry_reason=(
+                        "The working tree's cumulative change violates the scope policy (see above). "
+                        "Remove or rework the offending changes so the whole diff stays in scope."))
+                    ui.fail("cumulative change violates the scope policy")
 
             if failure is not None:
                 att["failure"] = failure.to_dict()
@@ -433,8 +471,6 @@ class Orchestrator:
             test_report = _test_dict(tests, baseline_failed) if tests else {"ran": False}
             test_report["command"] = " ".join(test_cmd) if test_cmd else None
             test_report["tests_touched"] = [p for p in ws.changed_files() if _is_test_path(p)]
-            scope_now = scope_evaluate(diff, root, controls.max_diff_lines, constraints,
-                                       *self._contents_for(ws))
             crit: Critique | None = None
             if cfg.pipeline.critique:
                 ui.step("Independent review", self.cfg.critic.model or self.cfg.llm.model)
@@ -457,6 +493,8 @@ class Orchestrator:
                 for g in crit.gates:
                     ui.info(f"gate: {g}")
                 if crit.verdict == "NEEDS_REVISION":
+                    candidate = {"diff": diff, "tests": tests, "critique": crit, "scope": scope_now,
+                                 "validators": validator_results, "attempt": attempt}
                     critique_rounds -= 1
                     attempt_budget += 1   # a review round is its own bounded budget
                     failure = analyze_critique(crit, ws)
@@ -475,15 +513,31 @@ class Orchestrator:
                      "validators": validator_results, "attempt": attempt}
             break
 
+        if final is None and candidate is not None:
+            ws.reset_hard()
+            try:
+                ws.apply_patch(candidate["diff"])
+            except Exception as exc:   # cannot restore -> fall through to the failure path
+                rec.event("fallback", f"could not restore the reviewed candidate: {exc}")
+            else:
+                crit = candidate["critique"]
+                crit.verdict = "HUMAN_REVIEW"
+                crit.gates.append("the requested revision failed validation -> publishing the reviewed "
+                                  "candidate for HUMAN_REVIEW")
+                rec.event("fallback", f"revision round failed; restored candidate from attempt {candidate['attempt']}")
+                rec.set("final_from_attempt", candidate["attempt"])
+                ui.warn("revision failed - falling back to the reviewed candidate (HUMAN_REVIEW)")
+                final = candidate
+
         if final is None:
             ws.reset_hard()
             category = last_failure.category if last_failure else "unknown"
             ui.fail(f"All attempts failed (last failure: {category}).")
             if category == "scope_violation" and last_failure:
-                self.publisher.comment(_scope_comment(last_failure.message), "scope_violation")
+                self.publisher.comment(_scope_comment(last_failure.message, self.rec.run_id), "scope_violation")
                 return self._finish("scope_violation", attempts=attempt, error=last_failure.message[:1000],
                                     failure_category=category)
-            self.publisher.comment(_failure_comment(last_failure), "failed")
+            self.publisher.comment(_failure_comment(last_failure, self.rec.run_id), "failed")
             return self._finish("failed", attempts=attempt, failure_category=category,
                                 error=(last_failure.message[:1000] if last_failure else None))
 
@@ -594,7 +648,8 @@ class Orchestrator:
         tests: TestResult | None = final["tests"]
         crit: Critique | None = final["critique"]
         scope = final["scope"]
-        verdict = crit.verdict if crit else None
+        # Without a review, a change whose tests do not fully pass still goes out only as a draft.
+        verdict = crit.verdict if crit else ("HUMAN_REVIEW" if tests and not tests.passed else None)
 
         with tagged(self.llm, "pr_summary"):
             try:
@@ -628,7 +683,8 @@ class Orchestrator:
             limitations.append("Reviewer: existing tests only partially exercise the fixed behaviour — "
                                + crit.answers["tests_meaningful"].get("details", ""))
         if not cfg.validation.sandbox_prefix:
-            limitations.append("Repository code ran without container isolation (secrets were stripped from the environment).")
+            limitations.append("Repository code (tests, linters) ran on the host without container isolation; "
+                               "its environment was reduced to an allowlist, but it could read the user's files.")
         scope_notes = [f.message for f in scope.findings if f.severity == "review"]
         explanation = PRExplanation(
             root_cause=plan.root_cause if not plan.root_cause.startswith("(planning skipped)") else "",
@@ -738,6 +794,12 @@ class Orchestrator:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _only_preexisting_failures(t: TestResult, baseline_failed: set[str]) -> bool:
+    """Tests failed, but every failure was already failing at baseline (nothing new broke)."""
+    return bool(not t.passed and not t.timed_out and baseline_failed and t.failed_tests
+                and set(t.failed_tests) <= baseline_failed)
+
+
 def _count_changed(diff: str) -> int:
     return sum(1 for ln in diff.splitlines()
                if ln.startswith(("+", "-")) and not ln.startswith(("+++", "---")))
@@ -815,6 +877,25 @@ def _scope_summary(report) -> str:
     return "; ".join(f"[{f.severity}] {f.message}" for f in report.findings)
 
 
+# Public comments carry no raw model, test or tool output: that text can contain local paths,
+# file contents printed by repository code, or (despite redaction) credentials. Details stay in
+# the local run record, which the comment points to.
+
+_FAILURE_WORDS = {
+    "edit_error": "the generated edits did not apply cleanly to the current code",
+    "missing_search": "the generated edits did not apply cleanly to the current code",
+    "ambiguous_match": "the generated edits matched more than one place in the code",
+    "syntax_error": "the edited file no longer parsed",
+    "format_error": "the model's answer could not be parsed into edits",
+    "tests_failed": "the change did not pass the repository's tests",
+    "regression": "the change broke tests that passed before",
+    "lint_failed": "the change introduced new linter or type-checker findings",
+    "llm_error": "the language-model API call failed",
+    "scope_violation": "the change was outside the configured scope policy",
+    "critique_revision": "the independent review asked for changes that could not be completed",
+}
+
+
 def _needs_info_comment(question: str, repo: str, number: int) -> str:
     return (
         f"👋 Hi! I looked at this issue and need a bit more information before I can attempt a fix.\n\n"
@@ -824,33 +905,36 @@ def _needs_info_comment(question: str, repo: str, number: int) -> str:
     )
 
 
-def _scope_comment(reason: str) -> str:
+def _scope_comment(reason: str, run_id: str | None = None) -> str:
+    quoted = neutralize(reason, 1200).replace("\n", "\n> ")
     return (
-        f"⚠️ I analysed this issue but the required change exceeds my configured scope limits:\n\n"
-        f"> {reason[:1500]}\n\n"
-        f"A human review is needed for this one. "
-        f"If you want to allow larger diffs, adjust `max_diff_lines` in `~/.fix-issue.toml` "
-        f"or update `.fix-issue-ignore` / `.fix-issue-scope.toml` in the repo.\n\n"
-        f"*(Posted automatically by fix-issue.)*"
+        f"⚠️ I analysed this issue, but the change it needs is outside the scope policy I run under "
+        f"(blocked paths, size limit or paths that need a human):\n\n"
+        f"> {quoted}\n\n"
+        f"A human review is needed for this one. The limits are `max_diff_lines` in the fix-issue "
+        f"config and the repository's `.fix-issue-ignore` / `.fix-issue-scope.toml`."
+        + (f" Local run record: `{run_id}`." if run_id else "")
+        + "\n\n*(Posted automatically by fix-issue.)*"
     )
 
 
-def _failure_comment(f: FailureAnalysis | None) -> str:
-    detail = f.message[:1500] if f else "No details available."
+def _failure_comment(f: FailureAnalysis | None, run_id: str | None = None) -> str:
     cat = f.category if f else "unknown"
+    why = _FAILURE_WORDS.get(cat, "see the run record for details")
     return (
-        f"🤖 I attempted to fix this issue but all attempts failed (last failure: `{cat}`).\n\n"
-        f"```\n{detail}\n```\n\n"
-        f"This may need a more involved fix than I can safely produce automatically. "
-        f"*(Posted automatically by fix-issue.)*"
+        f"🤖 I attempted to fix this issue but every attempt failed (last failure: `{cat}` — {why}).\n\n"
+        f"This may need a more involved fix than I can safely produce automatically."
+        + (f" The full log is in the local run record `{run_id}` (`fix-issue runs show {run_id}`)." if run_id else "")
+        + "\n\n*(Posted automatically by fix-issue.)*"
     )
 
 
 def _rejected_comment(c: Critique) -> str:
     return (
         f"🤖 I produced a candidate fix, but an independent review rejected it, so no PR was opened.\n\n"
-        f"**Reviewer summary:** {c.summary}\n\n"
-        + ("\n".join(f"- {r}" for r in c.required_changes) + "\n\n" if c.required_changes else "")
+        f"**Reviewer summary:** {neutralize(c.summary, 1500)}\n\n"
+        + ("\n".join(f"- {neutralize(r, 300)}" for r in c.required_changes[:10]) + "\n\n"
+           if c.required_changes else "")
         + "*(Posted automatically by fix-issue.)*"
     )
 

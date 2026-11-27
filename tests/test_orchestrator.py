@@ -732,3 +732,74 @@ def test_triage_out_of_scope_short_circuits(pipeline):
     assert run.publisher.actions == []           # only needs_info / duplicate post a comment
     assert llm.tags() == ["triage"]
     llm.assert_exhausted()
+
+
+# ---------------------------------------------------------------------------
+# Fallbacks, error handling and public comments
+# ---------------------------------------------------------------------------
+
+STALE = edits("Fix the unit.", (SCHEDULE, '    "s": 60,  # seconds\n', '    "s": 1,  # seconds\n'))
+
+
+def test_failed_revision_round_falls_back_to_reviewed_candidate(pipeline):
+    """A validated patch that got NEEDS_REVISION is not thrown away when the revision fails."""
+    needs_revision = critique_json("NEEDS_REVISION", required_changes=["Also accept 'S' (upper case)"])
+    bad_revision = edits("Accept upper case too.", (SCHEDULE, "    NOT IN THE FILE\n", "    x\n"))
+    llm = (ScriptedLLM().script("triage", triage_json()).script("plan", plan_json())
+           .script("edit:all", FIX_RESPONSE, bad_revision).script("critique", needs_revision)
+           .script("pr_summary", SUMMARY))
+
+    def one_attempt(cfg: Config) -> None:
+        cfg.limits.max_retries = 1          # + 1 review round = 2 attempts
+
+    run = pipeline(llm, configure=one_attempt)
+    res, rec = run.result, run.record
+
+    assert res.result == "dry_run", res.error
+    assert res.verdict == "HUMAN_REVIEW" and rec["pr"]["draft"] is True
+    assert [a["result"] for a in rec["attempts"]] == ["needs_revision", "failed"]
+    assert rec["final_from_attempt"] == 1
+    assert changed_lines(res.final_diff) == ['-    "s": 60,', '+    "s": 1,']
+    assert changed_lines(git(run.root, "diff", run.base_sha)) == ['-    "s": 60,', '+    "s": 1,']
+    assert not [a for a in run.publisher.actions if a["type"] == "comment"]
+    llm.assert_exhausted()
+
+
+def test_all_attempts_failing_posts_a_comment_without_raw_output(pipeline):
+    llm = ScriptedLLM().script("triage", triage_json()).script("plan", plan_json()).script("edit:all", STALE)
+
+    def one_attempt(cfg: Config) -> None:
+        cfg.limits.max_retries = 1
+
+    run = pipeline(llm, configure=one_attempt)
+    assert run.result.result == "failed"
+    [comment] = [a for a in run.publisher.actions if a["type"] == "comment"]
+    assert comment["kind"] == "failed" and "missing_search" in comment["body"]
+    assert run.result.run_id in comment["body"]
+    assert "# seconds" not in comment["body"] and "```" not in comment["body"]   # no model/tool output
+    assert_tree_clean(run)
+    llm.assert_exhausted()
+
+
+def test_unexpected_exception_is_a_recorded_error_with_secrets_redacted(case, tmp_path):
+    from fix_issue.redaction import register_secret
+
+    token = "ghp_" + "Z9y8X7w6V5" * 4
+    register_secret(token)
+
+    def broken_workspace():
+        raise subprocess.CalledProcessError(128, ["git", "clone", f"https://x-access-token:{token}@github.com/o/r"])
+
+    cfg = Config()
+    cfg.retrieval.embedding_backend = "local"
+    cfg.retrieval.cache_dir = str(tmp_path / "cache")
+    recorder = RunRecorder(repo="bench/x", issue_number=1, params={}, source={"type": "bench"},
+                           directory=tmp_path / "runs", write_summary_log=False)
+    llm = ScriptedLLM().script("triage", triage_json())
+    orch = Orchestrator(cfg, TaggingRecorder(llm), BenchIssueSource(case), broken_workspace, RecordingPublisher(),
+                        recorder=recorder, dry_run=True)
+    res = orch.run()
+
+    assert res.result == "error" and "CalledProcessError" in res.error
+    assert token not in json.dumps(res.record) and token not in res.error
+    assert any(e["stage"] == "traceback" for e in res.record["events"])

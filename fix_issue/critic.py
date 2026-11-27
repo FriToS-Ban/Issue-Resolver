@@ -17,7 +17,8 @@ Verdicts: APPROVED | NEEDS_REVISION | HUMAN_REVIEW | REJECTED
 
 Deterministic gates (applied in order, each recorded in ``gates``):
   G1 tests did not run              -> at most HUMAN_REVIEW
-  G2 tests failed                   -> at most NEEDS_REVISION
+  G2 tests failed                   -> at most NEEDS_REVISION (at most HUMAN_REVIEW when the only
+                                       failures are tests that already failed before the patch)
   G3 scope requires human review    -> at most HUMAN_REVIEW
   G4 scope blocked                  -> REJECTED
   G5 new linter/type findings       -> at most NEEDS_REVISION
@@ -127,6 +128,7 @@ def apply_gates(
     scope_requires_review: bool,
     new_validator_findings: int,
     strict: bool = False,
+    only_preexisting_failures: bool = False,
 ) -> tuple[str, list[str]]:
     v = llm_verdict if llm_verdict in VERDICTS else "HUMAN_REVIEW"
     gates: list[str] = []
@@ -141,6 +143,11 @@ def apply_gates(
         nv = _cap(v, "HUMAN_REVIEW")
         if nv != v:
             gates.append("G1 no test suite ran — cannot approve automatically")
+        v = nv
+    elif tests_passed is False and only_preexisting_failures:
+        nv = _cap(v, "HUMAN_REVIEW")
+        if nv != v:
+            gates.append("G2 only tests that already failed before the patch still fail — human review")
         v = nv
     elif tests_passed is False:
         nv = _cap(v, "NEEDS_REVISION")
@@ -190,6 +197,8 @@ def critique_patch(
 ) -> Critique:
     tests_ran = bool(test_report.get("ran"))
     tests_passed = test_report.get("passed") if tests_ran else None
+    only_pre = bool(tests_passed is False and test_report.get("baseline_failures")
+                    and not test_report.get("new_failures") and not test_report.get("timed_out"))
     new_findings = sum(len(v.get("new_findings", [])) for v in validator_report if v.get("ran"))
     criteria = "\n".join(f"- {c}" for c in acceptance_criteria) or "(none stated — infer from the issue)"
     validators = "\n".join(
@@ -241,7 +250,8 @@ Review the patch and output ONLY the JSON object.
         verdict, gates = apply_gates("HUMAN_REVIEW", {}, tests_ran=tests_ran, tests_passed=tests_passed,
                                      scope_ok=scope_report.get("ok", True),
                                      scope_requires_review=scope_report.get("requires_review", False),
-                                     new_validator_findings=new_findings, strict=strict)
+                                     new_validator_findings=new_findings, strict=strict,
+                                     only_preexisting_failures=only_pre)
         return Critique(verdict, "UNAVAILABLE", {}, [], [], "Reviewer unavailable; human review required.",
                         gates + ["reviewer error → HUMAN_REVIEW"], [], f"{type(exc).__name__}: {exc}"[:500])
     answers = {k: value.get(k) or {} for k in
@@ -249,7 +259,7 @@ Review the patch and output ONLY the JSON object.
     verdict, gates = apply_gates(
         value["verdict"], answers, tests_ran=tests_ran, tests_passed=tests_passed,
         scope_ok=scope_report.get("ok", True), scope_requires_review=scope_report.get("requires_review", False),
-        new_validator_findings=new_findings, strict=strict,
+        new_validator_findings=new_findings, strict=strict, only_preexisting_failures=only_pre,
     )
     return Critique(verdict, value["verdict"], answers, value.get("missing_edge_cases", []),
                     value.get("required_changes", []), value.get("summary", ""), gates, warnings)

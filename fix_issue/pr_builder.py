@@ -17,8 +17,10 @@ explicitly in the PR body so reviewers can see exactly how the score was derived
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
+
+from fix_issue.redaction import neutralize
 
 
 @dataclass
@@ -102,6 +104,20 @@ def build_pr(
         )
         formula_extra = " − review_penalty − scope_penalty"
 
+    # Model-written text is embedded verbatim below: strip credentials, @mentions and closing
+    # keywords that could ping people or close unrelated issues.
+    triage_reason = neutralize(triage_reason, 1000)
+    llm_summary = neutralize(llm_summary, 4000)
+    if explanation is not None:
+        explanation = replace(
+            explanation,
+            root_cause=neutralize(explanation.root_cause, 1500),
+            why_it_works=[neutralize(w, 600) for w in explanation.why_it_works],
+            review_summary=neutralize(explanation.review_summary, 1500),
+            review_gates=[neutralize(g, 300) for g in explanation.review_gates],
+            scope_notes=[neutralize(n, 400) for n in explanation.scope_notes],
+            limitations=[neutralize(x, 600) for x in explanation.limitations],
+        )
     root_cause = explanation.root_cause if explanation and explanation.root_cause else triage_reason
     explanation_md = _render_explanation(explanation) if explanation else ""
     run_note = f" Run id: `{explanation.run_id}`." if explanation and explanation.run_id else ""

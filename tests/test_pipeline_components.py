@@ -274,3 +274,30 @@ def test_dotenv_and_nvidia_key(tmp_path, monkeypatch):
     assert cfg.llm.api_key == "nv-test-123"
     assert cfg.pipeline.planning is False
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+
+
+def test_gate_g2_only_preexisting_failures_caps_at_human_review():
+    from fix_issue.critic import apply_gates
+
+    v, gates = apply_gates("APPROVED", _YES, tests_ran=True, tests_passed=False, scope_ok=True,
+                           scope_requires_review=False, new_validator_findings=0,
+                           only_preexisting_failures=True)
+    assert v == "HUMAN_REVIEW" and any("already failed before the patch" in g for g in gates)
+    v, _ = apply_gates("APPROVED", _YES, tests_ran=True, tests_passed=False, scope_ok=True,
+                       scope_requires_review=False, new_validator_findings=0)
+    assert v == "NEEDS_REVISION"
+
+
+def test_only_preexisting_failures_helper():
+    from fix_issue.orchestrator import _only_preexisting_failures
+    from fix_issue.test_runner import TestResult
+
+    def tr(passed, failed, timed_out=False):
+        return TestResult(passed=passed, output="", duration_seconds=1.0, command=["pytest"],
+                          failed_tests=failed, timed_out=timed_out)
+
+    assert _only_preexisting_failures(tr(False, ["t::a"]), {"t::a", "t::b"}) is True
+    assert _only_preexisting_failures(tr(False, ["t::a", "t::new"]), {"t::a"}) is False
+    assert _only_preexisting_failures(tr(False, []), {"t::a"}) is False        # unparsed failure
+    assert _only_preexisting_failures(tr(False, ["t::a"], timed_out=True), {"t::a"}) is False
+    assert _only_preexisting_failures(tr(False, ["t::a"]), set()) is False

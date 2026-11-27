@@ -62,3 +62,22 @@ def redact(text: str | None) -> str:
     for pat in _PATTERNS:
         text = pat.sub(_sub, text)
     return text
+
+
+_MENTION = re.compile(r"(?<![\w`])@(?=[A-Za-z0-9][\w-]*)")
+_CLOSING = re.compile(r"(?i)\b((?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:[\w.-]+/[\w.-]+)?#)(\d)")
+_ZWSP = "\u200b"
+
+
+def neutralize(text: str | None, limit: int | None = None) -> str:
+    """Make model-written text safe to embed in a GitHub comment or PR body.
+
+    Redacts credentials, stops @mentions from pinging anyone, and stops "fixes #N" from linking
+    or auto-closing other issues (a zero-width space is inserted). Optionally caps the length.
+    """
+    out = redact(text or "")
+    out = _MENTION.sub("@" + _ZWSP, out)
+    out = _CLOSING.sub(lambda m: m.group(1) + _ZWSP + m.group(2), out)   # "#<ZWSP>12" is no reference
+    if limit is not None and len(out) > limit:
+        out = out[: limit - 1].rstrip() + "…"
+    return out
