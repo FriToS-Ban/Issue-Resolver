@@ -358,7 +358,9 @@ DEFAULT_RULES: tuple[PathRule, ...] = (
     # Severity is decided per file: new migration -> review, existing one touched -> block.
     PathRule("migrations", ["**/migrations/**", "**/alembic/**", "**/*migration*"], "review"),
     PathRule("tests", ["tests/**", "**/tests/**", "test_*.py", "*_test.py", "conftest.py",
-                       "**/__tests__/**", "*.spec.*", "*.test.*"], "info", weight=0.5),
+                       "**/__tests__/**", "*.spec.*", "*.test.*",
+                       "test/**", "**/test/**", "spec/**", "**/spec/**", "*_test.go", "*_spec.rb",
+                       "*Test.java", "*Tests.java", "*Test.kt"], "info", weight=0.5),
     PathRule("docs", ["docs/**", "*.md", "*.rst"], "info", weight=0.25),
     PathRule("auth", ["**/auth/**", "**/*auth*.py", "**/permission*", "**/oauth/**",
                       "**/security/**", "**/login*"], "review", max_lines=20),

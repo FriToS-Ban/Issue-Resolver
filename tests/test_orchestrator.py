@@ -272,11 +272,19 @@ def pipeline(case, template, tmp_path) -> Callable[..., Run]:
 
 def run_pipeline(case: Case, template: tuple[Path, str], tmp_path: Path, llm: ScriptedLLM, *,
                  critic: ScriptedLLM | None = None, profile: str = "full",
-                 configure: Callable[[Config], None] | None = None) -> Run:
-    """Build and run the orchestrator exactly like ``bench.runner.run_case`` does."""
+                 configure: Callable[[Config], None] | None = None,
+                 prepare: Callable[[Path], None] | None = None) -> Run:
+    """Build and run the orchestrator exactly like ``bench.runner.run_case`` does.
+
+    ``prepare`` may change the repository copy first; its changes are committed as the base."""
     root = tmp_path / "repo"
     shutil.copytree(template[0], root)
     base_sha = template[1]
+    if prepare:
+        prepare(root)
+        git(root, "add", "-A")
+        git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "prepare")
+        base_sha = git(root, "rev-parse", "HEAD").strip()
     cfg = Config()
     cfg.pipeline.profile = profile
     cfg.retrieval.embedding_backend = "local"
@@ -827,3 +835,50 @@ def test_cannot_fix_on_a_later_plan_step_skips_the_step(pipeline):
     assert att["result"] == "accepted" and att["edits"][1].get("skipped") is True
     assert any(e["stage"] == "step_skipped" for e in rec["events"])
     llm.assert_exhausted()
+
+
+def test_only_preexisting_failures_get_a_repair_attempt_then_human_review(pipeline):
+    """An unrelated test that already failed at baseline must not make a correct fix impossible."""
+    def add_unrelated_failure(root: Path) -> None:
+        (root / "tests" / "test_unrelated_env.py").write_bytes(
+            b"def test_needs_a_database_url():\n    assert False, 'DATABASE_URL not set'\n")
+
+    def one_attempt(cfg: Config) -> None:
+        cfg.limits.max_retries = 1          # the repair attempt must come on top of this
+
+    llm = (ScriptedLLM().script("triage", triage_json()).script("plan", plan_json())
+           .script("edit:all", FIX_RESPONSE, FIX_RESPONSE)       # re-emitted: already applied
+           .script("critique", critique_json()).script("pr_summary", SUMMARY))
+
+    run = pipeline(llm, configure=one_attempt, prepare=add_unrelated_failure)
+    res, rec = run.result, run.record
+
+    assert res.result == "dry_run", res.error
+    assert rec["baseline"]["passed"] is False
+    first, second = rec["attempts"]
+    assert first["result"] == "failed" and first["failure"]["plan_contradiction"] is None
+    assert second["tests"].get("only_preexisting_failures") is True
+    assert "plan_revision" not in llm.tags()
+    assert res.verdict == "HUMAN_REVIEW" and rec["pr"]["draft"] is True
+    assert any("already failed before the patch" in g for g in rec["critiques"][-1]["gates"])
+    _, prompt2 = llm.prompts("edit:all")
+    assert "already failed before your change" in prompt2
+    assert changed_lines(res.final_diff) == ['-    "s": 60,', '+    "s": 1,']
+    llm.assert_exhausted()
+
+
+def test_candidate_snapshot_restores_crlf_bytes_exactly(tmp_path):
+    from fix_issue.orchestrator import _restore, _snapshot
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "crlf.py").write_bytes(b"a = 1\r\nb = 2\r\n")
+    (tmp_path / "new.txt").write_bytes(b"x\n")
+    snap = _snapshot(tmp_path, ["pkg/crlf.py", "new.txt", "gone.py"])
+    (tmp_path / "pkg" / "crlf.py").write_bytes(b"changed\n")
+    (tmp_path / "new.txt").unlink()
+    (tmp_path / "gone.py").write_bytes(b"should be removed\n")
+    _restore(tmp_path, snap)
+    assert (tmp_path / "pkg" / "crlf.py").read_bytes() == b"a = 1\r\nb = 2\r\n"
+    assert (tmp_path / "new.txt").read_bytes() == b"x\n" and not (tmp_path / "gone.py").exists()
+    with pytest.raises(RuntimeError):
+        _restore(tmp_path / "pkg", {"../escape.txt": b"no"})

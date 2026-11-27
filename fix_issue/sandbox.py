@@ -74,6 +74,9 @@ _ENV_ALLOWLIST = frozenset({
     "NODE_PATH", "NODE_ENV", "NODE_OPTIONS", "NVM_DIR", "NVM_BIN", "NVM_HOME", "NVM_SYMLINK",
     # Go / Rust / Java
     "GOPATH", "GOROOT", "GOCACHE", "GOMODCACHE", "GOFLAGS", "GOOS", "GOARCH", "CGO_ENABLED",
+    "GOPROXY", "GOPRIVATE", "GONOSUMDB", "GONOPROXY", "GOTOOLCHAIN",
+    # Shared-library lookup: a --enable-shared Python without rpath cannot start without it.
+    "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH",
     "CARGO_HOME", "RUSTUP_HOME", "JAVA_HOME",
 })
 _ENV_ALLOW_PREFIXES = ("LC_",)

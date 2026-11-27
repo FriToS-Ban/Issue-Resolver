@@ -428,7 +428,9 @@ class Orchestrator:
                         failure = analyze_test_failure(ws, tests, baseline_failed, plan.files_to_change, repo_files)
                         if only_pre:
                             preexisting_retry_used = True
-                            failure = replace(failure, retry_reason=(
+                            attempt_budget += 1     # the repair attempt has its own budget
+                            # Unrelated old failures are not evidence against the plan: no revision.
+                            failure = replace(failure, plan_contradiction=None, retry_reason=(
                                 "No NEW test failures, but these tests already failed before your change and "
                                 f"still fail: {', '.join(sorted(tests.failed_tests)[:10])}. If they reproduce this "
                                 "issue, make them pass. If they are unrelated, keep your fix and say so in INTENT "
@@ -520,7 +522,8 @@ class Orchestrator:
                     ui.info(f"gate: {g}")
                 if crit.verdict == "NEEDS_REVISION":
                     candidate = {"diff": diff, "tests": tests, "critique": crit, "scope": scope_now,
-                                 "validators": validator_results, "attempt": attempt}
+                                 "validators": validator_results, "attempt": attempt,
+                                 "files": _snapshot(root, ws.changed_files())}
                     critique_rounds -= 1
                     attempt_budget += 1   # a review round is its own bounded budget
                     failure = analyze_critique(crit, ws)
@@ -542,8 +545,11 @@ class Orchestrator:
         if final is None and candidate is not None:
             ws.reset_hard()
             try:
-                ws.apply_patch(candidate["diff"])
+                _restore(root, candidate["files"])
+                if ws.diff() != candidate["diff"]:
+                    raise RuntimeError("restored tree does not match the reviewed diff")
             except Exception as exc:   # cannot restore -> fall through to the failure path
+                ws.reset_hard()
                 rec.event("fallback", f"could not restore the reviewed candidate: {exc}")
             else:
                 crit = candidate["critique"]
@@ -675,7 +681,8 @@ class Orchestrator:
         crit: Critique | None = final["critique"]
         scope = final["scope"]
         # Without a review, a change whose tests do not fully pass still goes out only as a draft.
-        verdict = crit.verdict if crit else ("HUMAN_REVIEW" if tests and not tests.passed else None)
+        needs_human = (not tests or not tests.passed or bool(getattr(scope, "requires_review", False)))
+        verdict = crit.verdict if crit else ("HUMAN_REVIEW" if needs_human else None)
 
         with tagged(self.llm, "pr_summary"):
             try:
@@ -830,6 +837,29 @@ class Orchestrator:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _snapshot(root: Path, paths: list[str]) -> dict[str, bytes | None]:
+    """Exact bytes of every changed path (None = deleted), for restoring a reviewed candidate."""
+    out: dict[str, bytes | None] = {}
+    for rel in paths:
+        fp = root / rel
+        out[rel] = fp.read_bytes() if fp.is_file() and not fp.is_symlink() else None
+    return out
+
+
+def _restore(root: Path, files: dict[str, bytes | None]) -> None:
+    base = root.resolve()
+    for rel, data in files.items():
+        fp = (root / rel)
+        if base not in fp.resolve().parents:
+            raise RuntimeError(f"refusing to restore outside the repository: {rel}")
+        if data is None:
+            if fp.is_file():
+                fp.unlink()
+        else:
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            fp.write_bytes(data)
+
 
 def _only_preexisting_failures(t: TestResult, baseline_failed: set[str]) -> bool:
     """Tests failed, but every failure was already failing at baseline (nothing new broke)."""

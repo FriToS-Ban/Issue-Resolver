@@ -73,6 +73,10 @@ _GIT_ENV_PASSTHROUGH = (
     "GIT_SSL_CAINFO", "GIT_SSL_CAPATH",
     "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
     "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
+    # The user's own SSH / signing setup (a global url.insteadOf may route github.com over SSH,
+    # commit.gpgsign may be on). Given to git only, never to repository code.
+    "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT",
+    "GNUPGHOME", "GPG_TTY", "DISPLAY",
 )
 
 
@@ -169,6 +173,9 @@ def git_env() -> dict[str, str]:
             present.add(key)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "never"
+    # refs/replace (writable by repository code) would let `git diff <base>` show a different
+    # base tree than the one that gets committed on, hiding changes from the scope checks.
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
     return env
 
 
@@ -341,8 +348,10 @@ class GitWorkspace:
     def diff(self) -> str:
         """Cumulative unified diff of the working tree vs. the base commit (incl. new files)."""
         self._run(["git", "add", "--intent-to-add", "."], check=False)
-        out = self._run(["git", "diff", "--no-color", "--no-ext-diff", "--no-textconv", self.base_ref],
-                        check=False)
+        # Fixed a/ b/ prefixes: diff.mnemonicPrefix / diff.noprefix in the user's (or a planted)
+        # config would otherwise change the headers every path rule and the PR text parse.
+        out = self._run(["git", "diff", "--no-color", "--no-ext-diff", "--no-textconv",
+                         "--src-prefix=a/", "--dst-prefix=b/", self.base_ref], check=False)
         return out.stdout
 
     def changed_files(self) -> list[str]:
@@ -377,10 +386,10 @@ class GitWorkspace:
             # (the index — what the reviewed diff was computed from — is left untouched).
             self._run(["git", "symbolic-ref", "HEAD", f"refs/heads/{branch}"])
             self._run(["git", "update-ref", f"refs/heads/{branch}", self.base_ref])
+        # Untracked tool artifacts are kept out by .git/info/exclude. (A former blanket
+        # `git rm --cached *.patch *.pyc __pycache__` also deleted TRACKED files of that kind from
+        # the commit — changes the reviewed diff never contained.)
         self._run(["git", "add", "-A"])
-        # Unstage any accidental internal/bytecode artifacts if present
-        self._run(["git", "rm", "-r", "--cached", "--ignore-unmatch", "-q",
-                   "_fix_issue.patch", "*.patch", "__pycache__", "*.pyc"], check=False)
         self._run(["git", "commit", "--no-verify", "-q", "-m", message])
         self._commit_sha = self._run(["git", "rev-parse", "HEAD"]).stdout.strip()
         return self._commit_sha
@@ -527,7 +536,10 @@ class RepoManager(GitWorkspace):
         on, and — with a token — no credential helpers, so a rejected token fails instead of quietly
         falling back to the user's own stored GitHub credentials.
         """
-        args = ["-c", "http.sslVerify=true"]
+        url = self._remote_url()
+        # `url.<X>.insteadOf=<X>` is the longest possible match for our URL, so it beats any
+        # user/global or planted rewrite (e.g. to SSH or another host): the URL is used as is.
+        args = ["-c", "http.sslVerify=true", "-c", f"url.{url}.insteadOf={url}"]
         if self.token:
             basic = base64.b64encode(f"x-access-token:{self.token}".encode()).decode()
             args = ["-c", f"http.{self.github_url}.extraheader=AUTHORIZATION: basic {basic}",
@@ -569,6 +581,7 @@ class RepoManager(GitWorkspace):
         """Force-push exactly the commit we made to the fix branch, at an explicit URL, authenticated per command."""
         source = self._commit_sha or f"refs/heads/{self.branch}"
         self._run(["git", *self._auth_args(), "push", "--no-verify", "--force", "--recurse-submodules=no",
+                   "--no-follow-tags",
                    self._remote_url(), f"{source}:refs/heads/{self.branch}"], timeout=_PUSH_TIMEOUT)
 
 
