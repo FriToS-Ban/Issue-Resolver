@@ -7,11 +7,15 @@ One line per run. Easy to query with `jq`, `grep`, or a spreadsheet.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_LOG_FILE = Path.home() / ".fix-issue-runs.jsonl"
+def _log_file() -> Path:
+    """~/.fix-issue-runs.jsonl, or FIX_ISSUE_HOME/runs.jsonl when FIX_ISSUE_HOME is set (tests, benchmarks)."""
+    home = os.environ.get("FIX_ISSUE_HOME")
+    return Path(home) / "runs.jsonl" if home else Path.home() / ".fix-issue-runs.jsonl"
 
 
 def log_run(
@@ -47,7 +51,9 @@ def log_run(
     record = {k: v for k, v in record.items() if v is not None}
 
     try:
-        with _LOG_FILE.open("a", encoding="utf-8") as f:
+        path = _log_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
     except OSError:
         pass  # logging failures must never crash the main pipeline

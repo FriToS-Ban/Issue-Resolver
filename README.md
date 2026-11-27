@@ -302,7 +302,7 @@ similar issues, tooling, baseline tests, retrieval with reasons, every plan vers
 (intent, edits, diff, scope report, tests, linters, failure analysis), every review round with its
 gates, a per-call LLM log (purpose, sizes, latency, truncated prompt tail and response) and the
 outcome. `fix-issue runs` reads these, and `fix-issue rerun` repeats a run with the recorded
-parameters. A one-line summary per GitHub run is also still appended to `~/.fix-issue-runs.jsonl`.
+parameters. A one-line summary per GitHub run is also still appended to `~/.fix-issue-runs.jsonl` (`FIX_ISSUE_HOME/runs.jsonl` when `FIX_ISSUE_HOME` is set).
 
 ---
 

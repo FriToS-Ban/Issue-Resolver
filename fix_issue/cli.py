@@ -499,7 +499,10 @@ def bench_retrieval(bench_dir: str | None, only: tuple[str, ...], top_n: int, co
         backend, base, key, model = cfg_module.embedding_settings(cfg)
         if backend == "openai_compatible":
             api = build_embedder(backend, base_url=base, api_key=key, model=model)
-    cache = cfg_module.fix_issue_home() / "cache" / "embeddings.jsonl"
+    cache_dir = cfg_module.fix_issue_home() / "cache"
+    if config_path and cfg.retrieval.cache_dir:          # honour [retrieval] cache_dir like the pipeline does
+        cache_dir = Path(cfg.retrieval.cache_dir)
+    cache = cache_dir / "embeddings.jsonl"
     data = evaluate_retrieval(cases, default_configs(api), top_n=top_n, cache_path=cache)
     md = render_retrieval_markdown(data)
     console.print(md)
