@@ -383,7 +383,9 @@ class RepositoryRetriever:
             backend=backend_name,
             semantic=semantic,
             stats={**idx.stats(), "candidates": len(cands),
-                   **({"embedding_error": self.embedding_error} if self.embedding_error else {})},
+                   **({"embedding_error": self.embedding_error} if self.embedding_error else {}),
+                   **({"embedding_rejected_inputs": getattr(self.embedder, "rejected", 0)}
+                      if getattr(self.embedder, "rejected", 0) else {})},
             candidates=[rf for rf in all_rf if not rf.is_test],
         )
 

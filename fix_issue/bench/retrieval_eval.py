@@ -105,12 +105,18 @@ def render_retrieval_markdown(data: dict[str, Any]) -> str:
     lines = [f"# Retrieval evaluation (top_n={data['top_n']}, {next(iter(s.values()))['n'] if s else 0} cases)", "",
              "| Metric | " + " | ".join(names) + " |", "|---|" + "---|" * len(names)]
     for key in ("recall@1", "recall@3", "recall@5", "mrr", "all_found", "symbol_recall",
-                "recall@5_easy", "recall@5_medium", "recall@5_hard", "mean_files_returned", "mean_context_chars"):
+                "recall@5_easy", "recall@5_medium", "recall@5_hard", "mean_files_returned", "mean_context_chars",
+                "errors"):
         vals = []
         for n in names:
             v = s[n].get(key)
-            vals.append("—" if v is None else (f"{v:.0f}" if key == "mean_context_chars" else f"{v:.2f}"))
+            vals.append("—" if v is None else (f"{v:.0f}" if key in ("mean_context_chars", "errors") else f"{v:.2f}"))
         lines.append(f"| {key} | " + " | ".join(vals) + " |")
+    failed = [n for n in names if s[n].get("errors")]
+    if failed:
+        lines += ["", "**Warning:** embedding errors in " + ", ".join(
+            f"`{n}` ({s[n]['errors']}/{s[n]['n']} cases)" for n in failed)
+            + " — those cases fell back to retrieval without embeddings; see `error` per case in the JSON."]
     lines += ["", "## Misses (expected file not in top-n)", ""]
     for row in data["cases"]:
         for n in names:

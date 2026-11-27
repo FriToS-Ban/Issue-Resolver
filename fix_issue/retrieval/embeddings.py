@@ -99,27 +99,51 @@ class OpenAICompatibleEmbedder:
         self.send_input_type = send_input_type
         self.timeout = timeout
         self.name = f"api:{model}"
+        self.rejected = 0          # inputs the server refused (HTTP 422) — they get no vector
 
     def embed(self, texts: list[str], kind: str) -> list[list[float]]:
+        """Embed ``texts``; an input the server refuses comes back as ``[]`` (cosine 0 with anything).
+
+        Blank strings are never sent (servers reject them with 400). A batch refused with HTTP 422
+        (e.g. NVIDIA NIM's "input rejected by content safety screening", which fires on ordinary
+        source code now and then) is bisected so only the refused inputs lose their vector; one
+        false positive must not switch semantic retrieval off for the whole repository.
+        Rejections are counted in ``self.rejected``. Any other HTTP error still raises.
+        """
+        out: list[list[float]] = [[] for _ in texts]
+        live = [i for i, t in enumerate(texts) if t.strip()]
+        for start in range(0, len(live), self.batch):
+            idx = live[start:start + self.batch]
+            for i, v in zip(idx, self._embed_batch([texts[i] for i in idx], kind)):
+                out[i] = v
+        return out
+
+    def _post(self, inputs: list[str], kind: str):
         import requests
 
-        out: list[list[float]] = []
-        for i in range(0, len(texts), self.batch):
-            body: dict = {"model": self.model, "input": texts[i:i + self.batch], "encoding_format": "float"}
-            if self.send_input_type:
-                body["input_type"] = kind
-            r = requests.post(f"{self.base_url}/embeddings", json=body, timeout=self.timeout,
-                              headers={"Authorization": f"Bearer {self.api_key}"})
-            if r.status_code == 400 and self.send_input_type:
-                # Some servers reject input_type; retry without it once and remember.
-                self.send_input_type = False
-                body.pop("input_type", None)
-                r = requests.post(f"{self.base_url}/embeddings", json=body, timeout=self.timeout,
-                                  headers={"Authorization": f"Bearer {self.api_key}"})
-            r.raise_for_status()
-            data = sorted(r.json()["data"], key=lambda d: d.get("index", 0))
-            out.extend(unit(d["embedding"]) for d in data)
-        return out
+        body: dict = {"model": self.model, "input": inputs, "encoding_format": "float"}
+        if self.send_input_type:
+            body["input_type"] = kind
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        r = requests.post(f"{self.base_url}/embeddings", json=body, timeout=self.timeout, headers=headers)
+        if r.status_code == 400 and self.send_input_type and "input_type" in r.text:
+            # Some servers reject input_type; retry without it once and remember.
+            self.send_input_type = False
+            body.pop("input_type", None)
+            r = requests.post(f"{self.base_url}/embeddings", json=body, timeout=self.timeout, headers=headers)
+        return r
+
+    def _embed_batch(self, inputs: list[str], kind: str) -> list[list[float]]:
+        r = self._post(inputs, kind)
+        if r.status_code == 422:
+            if len(inputs) == 1:
+                self.rejected += 1
+                return [[]]
+            mid = len(inputs) // 2
+            return self._embed_batch(inputs[:mid], kind) + self._embed_batch(inputs[mid:], kind)
+        r.raise_for_status()
+        data = sorted(r.json()["data"], key=lambda d: d.get("index", 0))
+        return [unit(d["embedding"]) for d in data]
 
 
 class EmbeddingCache:
@@ -130,11 +154,16 @@ class EmbeddingCache:
         self.vec: dict[str, list[float]] = {}
         if path and path.exists():
             try:
-                for line in path.read_text(encoding="utf-8").splitlines():
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                lines = []
+            for line in lines:
+                try:  # a torn line (e.g. two processes appending at once) costs one entry, not the cache
                     k, v = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(k, str) and isinstance(v, list) and v:
                     self.vec[k] = v
-            except (OSError, ValueError):
-                self.vec = {}
 
     def embed(self, backend: EmbeddingBackend, texts: list[str], kind: str = "passage") -> list[list[float]]:
         if not backend.semantic:  # local vectors depend on fitted IDF — never persist them
@@ -146,12 +175,13 @@ class EmbeddingCache:
             vecs = backend.embed(list(uniq.values()), kind)
             new = dict(zip(uniq.keys(), vecs))
             self.vec.update(new)
-            if self.path:
+            persist = {k: v for k, v in new.items() if v}  # refused inputs ([]) are retried next run
+            if self.path and persist:
                 try:
                     self.path.parent.mkdir(parents=True, exist_ok=True)
                     with open(self.path, "a", encoding="utf-8") as fh:
-                        for k, v in new.items():
-                            fh.write(json.dumps([k, [round(x, 6) for x in v]]) + "\n")
+                        fh.write("".join(json.dumps([k, [round(x, 6) for x in v]]) + "\n"
+                                         for k, v in persist.items()))
                 except OSError:
                     pass
         return [self.vec[k] for k in keys]
