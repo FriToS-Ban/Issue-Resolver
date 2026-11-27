@@ -80,9 +80,25 @@ def _changed_files(root: Path, base: str) -> list[str]:
     return sorted(n.strip() for n in names if n.strip() and "__pycache__" not in n)
 
 
+def _is_test_path(p: str) -> bool:
+    name = p.rsplit("/", 1)[-1]
+    return p.startswith(("tests/", "test/")) or "/tests/" in p or name.startswith("test_") or name.endswith("_test.py")
+
+
+def _changed_lines_by_file(root: Path, base: str) -> dict[str, int]:
+    """Added + removed lines per file (``git diff --numstat``; new files count as added)."""
+    out: dict[str, int] = {}
+    for row in _git(root, "diff", "--numstat", "--no-color", base).splitlines():
+        parts = row.split("	")
+        if len(parts) != 3 or "__pycache__" in parts[2]:
+            continue
+        added, removed, path = parts
+        out[path.strip()] = (int(added) if added.isdigit() else 0) + (int(removed) if removed.isdigit() else 0)
+    return out
+
+
 def _changed_lines(root: Path, base: str) -> int:
-    diff = _git(root, "diff", "--no-color", base)
-    return sum(1 for ln in diff.splitlines() if ln.startswith(("+", "-")) and not ln.startswith(("+++", "---")))
+    return sum(_changed_lines_by_file(root, base).values())
 
 
 def grade_case(case: Case, root: Path, base_sha: str, record: dict[str, Any], result: str) -> dict[str, Any]:
@@ -95,7 +111,11 @@ def grade_case(case: Case, root: Path, base_sha: str, record: dict[str, Any], re
     critiques = record.get("critiques") or []
 
     changed = _changed_files(root, base_sha)
-    lines = _changed_lines(root, base_sha)
+    per_file = _changed_lines_by_file(root, base_sha)
+    lines = sum(per_file.values())
+    # The size cap is about the FIX: added/updated regression tests are reported but not counted.
+    test_lines = sum(n for p, n in per_file.items() if _is_test_path(p))
+    source_lines = lines - test_lines
     patch_present = bool(changed)
 
     exp = case.expected_files
@@ -124,7 +144,7 @@ def grade_case(case: Case, root: Path, base_sha: str, record: dict[str, Any], re
         shutil.rmtree(root / HIDDEN_TEST_DIR, ignore_errors=True)
 
     forbidden_hits = [p for p in changed for pat in case.forbidden_paths if fnmatch.fnmatch(p, pat)]
-    over_size = case.max_diff_lines is not None and lines > int(case.max_diff_lines)
+    over_size = case.max_diff_lines is not None and source_lines > int(case.max_diff_lines)
     scope_respected = not forbidden_hits and not over_size
 
     classification_correct = classification == case.expected_classification
@@ -183,6 +203,9 @@ def grade_case(case: Case, root: Path, base_sha: str, record: dict[str, Any], re
         "patch_applied": patch_present,
         "changed_files": changed,
         "changed_lines": lines,
+        "changed_source_lines": source_lines,
+        "changed_test_lines": test_lines,
+        "max_diff_lines": case.max_diff_lines,
         "visible_tests_passed": visible_ok,
         "issue_fixed": hidden_ok,
         "tests_pass_but_not_fixed": bool(visible_ok and hidden_ok is False and patch_present),
