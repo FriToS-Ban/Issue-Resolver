@@ -79,7 +79,10 @@ class FailureAnalysis:
                 + ", ".join(self.partial_changes)
             )
         for path, excerpt in self.current_excerpts.items():
-            parts.append(f"CURRENT content of {path} (re-read from disk after the failure):\n```\n{excerpt}\n```")
+            # rstrip: a trailing newline inside the fence reads as an extra blank last line, which
+            # models then copy into SEARCH and so miss the end of the file.
+            body = excerpt.rstrip("\n")
+            parts.append(f"CURRENT content of {path} (re-read from disk after the failure):\n```\n{body}\n```")
         parts.append(self.retry_reason or "Produce a corrected edit against the CURRENT file content.")
         return "\n".join(parts)
 
@@ -89,10 +92,19 @@ class FailureAnalysis:
 # ---------------------------------------------------------------------------
 
 def _read(root: Path, rel: str) -> str | None:
-    p = root / rel
+    """Current content of a repository file - never of anything outside the clone or under .git.
+
+    ``rel`` can come from a model-written edit or a traceback; whatever it says, only a regular
+    file whose resolved path is inside the resolved root is read (no ``..``, absolute paths or
+    symlinks out of the repository).
+    """
     try:
+        base = root.resolve()
+        p = (root / rel).resolve()
+        if p == base or base not in p.parents or p.relative_to(base).parts[0].lower() == ".git":
+            return None
         return p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
-    except OSError:
+    except (OSError, ValueError):
         return None
 
 
@@ -167,6 +179,8 @@ def analyze_edit_failure(batch, workspace) -> FailureAnalysis:
     files: list[str] = []
     for o in failed:
         messages.append(f"[{o.error_kind}] {o.edit.file}: {o.error}")
+        if o.error_kind == "unsafe_path":
+            continue                      # never read a path that was refused
         files.append(o.edit.file)
         current = _read(root, o.edit.file)
         if current is not None and o.edit.file not in excerpts:

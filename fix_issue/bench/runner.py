@@ -91,7 +91,7 @@ def _changed_lines_by_file(root: Path, base: str) -> dict[str, int]:
     """Added + removed lines per file (``git diff --numstat``; new files count as added)."""
     out: dict[str, int] = {}
     for row in _git(root, "diff", "--numstat", "--no-color", base).splitlines():
-        parts = row.split("	")
+        parts = row.split(chr(9))
         if len(parts) != 3 or "__pycache__" in parts[2]:
             continue
         added, removed, path = parts

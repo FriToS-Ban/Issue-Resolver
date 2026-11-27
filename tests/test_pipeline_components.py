@@ -301,3 +301,26 @@ def test_only_preexisting_failures_helper():
     assert _only_preexisting_failures(tr(False, []), {"t::a"}) is False        # unparsed failure
     assert _only_preexisting_failures(tr(False, ["t::a"], timed_out=True), {"t::a"}) is False
     assert _only_preexisting_failures(tr(False, ["t::a"]), set()) is False
+
+
+def test_recovery_never_reads_outside_the_repository(tmp_path):
+    from fix_issue.recovery import _read
+
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    (repo / ".git").mkdir()
+    (repo / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+    (repo / "pkg" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP SECRET", encoding="utf-8")
+
+    assert _read(repo, "pkg/a.py") == "x = 1\n"
+    for bad in ("../secret.txt", str(secret), ".git/config", ".GIT/config", "pkg/../../secret.txt"):
+        assert _read(repo, bad) is None, bad
+
+
+def test_feedback_excerpt_has_no_phantom_trailing_blank_line():
+    from fix_issue.recovery import FailureAnalysis
+
+    fa = FailureAnalysis("missing_search", "not found", ["a.py"], [], {"a.py": "x = 1\ny = 2\n"})
+    assert "y = 2\n```" in fa.feedback() and "y = 2\n\n```" not in fa.feedback()
