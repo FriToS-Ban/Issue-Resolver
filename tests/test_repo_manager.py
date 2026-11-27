@@ -223,7 +223,9 @@ def test_auth_is_a_per_command_header_with_tls_verification_and_no_credential_he
     args = RepoManager("o/r", TOKEN, "b")._auth_args()
     assert f"http.https://github.com/.extraheader=AUTHORIZATION: basic {B64}" in args
     assert "credential.helper=" in args and "http.sslVerify=true" in args
-    assert RepoManager("o/r", "", "b")._auth_args() == ["-c", "http.sslVerify=true"]
+    url = "https://github.com/o/r.git"
+    assert RepoManager("o/r", "", "b")._auth_args() == ["-c", "http.sslVerify=true",
+                                                        "-c", f"url.{url}.insteadOf={url}"]
 
 
 def test_redact():
