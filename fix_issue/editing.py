@@ -37,12 +37,16 @@ Matching rules (per edit, applied in order to the evolving in-memory content)
 3. ``n == 0`` → line windows ignoring trailing whitespace (``trailing_ws``), then ignoring a
    common leading indentation while keeping relative indentation (``indent``). Accepted only
    when the number of windows equals ``expected_occurrences`` (exactly one by default).
-4. Still not found → ``already_applied`` if the REPLACE text is present (exactly, or as a
-   unique tolerant match); otherwise ``missing_search`` with ``best_match``.
-5. Empty SEARCH creates a file that does not exist yet (``create`` / ``(new)``); on an
+4. Still not found and SEARCH ends with blank lines → steps 2-3 are retried with those
+   trailing blank lines removed from SEARCH (and as many from REPLACE): models copy a phantom
+   empty last line from rendered file blocks, which can never match at the end of a file.
+5. Still not found → ``already_applied`` if the REPLACE text is present (exactly or
+   whitespace-tolerantly) *where the SEARCH text best matches* the file; REPLACE appearing
+   only somewhere else is no evidence. Otherwise ``missing_search`` with ``best_match``.
+6. Empty SEARCH creates a file that does not exist yet (``create`` / ``(new)``); on an
    existing file it is ``empty_search`` (``file_exists`` when the edit asked to create).
    SEARCH == REPLACE is ``no_change``.
-6. After all edits every changed file goes through ``validate_syntax``; a syntax error that
+7. After all edits every changed file goes through ``validate_syntax``; a syntax error that
    the edits introduced (the original file parsed fine) fails the batch (``syntax_error``).
 
 Line endings, trailing newlines and encodings
@@ -64,6 +68,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace as dc_replace
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from fix_issue.scope_guard import unsafe_component_reason
 
 try:
     import tomllib
@@ -159,14 +165,23 @@ class EditOutcome:
     error: str | None = None
     error_kind: str | None = None
     best_match: dict | None = None
+    # True when the path itself was refused (error_kind "unsafe_path"): ``edit.file`` is then the
+    # model's raw, untrusted string and must never be opened (it may point outside the repo).
+    path_rejected: bool = False
 
     @property
     def ok(self) -> bool:
         return self.status in _OK_STATUSES
 
+    @property
+    def safe_path(self) -> str | None:
+        """Canonical repo-relative path that is safe to read, or None when the path was rejected."""
+        return None if self.path_rejected else self.edit.file
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "file": self.edit.file,
+            "path_rejected": self.path_rejected,
             "create": self.edit.create,
             "expected_occurrences": self.edit.expected_occurrences,
             "search_lines": len(_split_lines(self.edit.search)),
@@ -293,6 +308,9 @@ _DECOR = r"(?:[#>*`\-]+\s*)*"   # markdown decoration allowed before a keyword: 
 _FILE_RE = re.compile(rf"^\s*{_DECOR}FILE\s*[*`]*\s*:\s*(?P<rest>.*?)\s*$", re.IGNORECASE)
 _INTENT_RE = re.compile(rf"^\s*{_DECOR}INTENT\s*[*`]*\s*:\s*[*`]*\s*(?P<rest>.*?)\s*$", re.IGNORECASE)
 _CANNOT_RE = re.compile(rf"^\s*{_DECOR}CANNOT[_ ]FIX\b\s*[*`]*\s*:?\s*(?P<rest>.*?)\s*$", re.IGNORECASE)
+# The marker exactly as the format specifies it ("CANNOT_FIX:" starting its own line), as
+# opposed to prose such as "Cannot fix the caller directly, so patch the helper".
+_CANNOT_MARKER_RE = re.compile(rf"^\s*{_DECOR}CANNOT_FIX\s*[*`]*\s*:", re.IGNORECASE)
 _SUFFIX_RE = re.compile(r"\(\s*([^()]*?)\s*\)\s*$")
 _OCC_RE = re.compile(r"(?:occurrences?|occurences?|count|times)\s*[:=]?\s*(\d+)")
 
@@ -346,6 +364,10 @@ def parse_edit_response(text: str) -> ParsedResponse:
     marker lines and ``<think>…</think>`` preambles. Blocks with problems (no FILE line,
     unterminated) are dropped and described in ``format_errors``; they are never guessed.
     Paths are only cleaned here — safety checks happen in ``plan_edits``.
+
+    A CANNOT_FIX line ends the run, so when the answer also contains edits it only counts if
+    it is the literal ``CANNOT_FIX:`` marker on its own line before any FILE line; a prose line
+    that merely starts with "cannot fix" (e.g. inside INTENT) is kept as text.
     """
     raw = text or ""
     lines = _strip_thinking(_lf(raw)).split("\n")
@@ -355,6 +377,8 @@ def parse_edit_response(text: str) -> ParsedResponse:
     intent_parts: list[str] = []
     intent_seen = intent_open = False
     cannot_fix: str | None = None
+    cannot_candidates: list[tuple[str, bool]] = []   # (reason, is the marker before any FILE line)
+    saw_file = False
 
     cur_file: str | None = None
     cur_occ: int | None = None
@@ -415,15 +439,20 @@ def parse_edit_response(text: str) -> ParsedResponse:
                 warn_unused_file()
                 set_file(m.group("rest"), lineno)
                 intent_open = False
+                saw_file = True
             elif _SEARCH_RE.match(line):
                 state, block_start, search_buf = "search", lineno, []
                 intent_open = False
             elif _DIVIDER_RE.match(line) or _REPLACE_RE.match(line):
                 errors.append(f"line {lineno}: stray '{line.strip()}' marker outside a SEARCH/REPLACE block.")
             elif (m := _CANNOT_RE.match(line)) is not None:
-                if cannot_fix is None:
-                    cannot_fix = m.group("rest").strip(" *`") or "(no reason given)"
-                intent_open = False
+                marker = bool(_CANNOT_MARKER_RE.match(line))
+                cannot_candidates.append((m.group("rest").strip(" *`") or "(no reason given)",
+                                          marker and not saw_file))
+                if marker:
+                    intent_open = False
+                elif intent_open:
+                    intent_parts.append(line.strip())   # prose; becomes CANNOT_FIX only without edits
             elif not intent_seen and (m := _INTENT_RE.match(line)) is not None:
                 intent_seen = intent_open = True
                 if m.group("rest"):
@@ -464,6 +493,11 @@ def parse_edit_response(text: str) -> ParsedResponse:
     else:
         warn_unused_file()
 
+    if edits:
+        cannot_fix = next((reason for reason, marker in cannot_candidates if marker), None)
+    elif cannot_candidates:
+        cannot_fix = cannot_candidates[0][0]
+
     if cannot_fix is not None and edits:
         errors.append("Response contains both CANNOT_FIX and SEARCH/REPLACE blocks.")
     if not edits and cannot_fix is None:
@@ -486,7 +520,16 @@ _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 
 
 def _check_path(root: Path, path: str) -> tuple[str | None, str | None]:
-    """Return ``(normalised_relative_path, None)`` or ``(None, reason)`` for unsafe paths."""
+    """
+    Return ``(canonical_relative_path, None)`` or ``(None, reason)`` for unsafe paths.
+
+    The returned path is the target's real location relative to the resolved root (symlinks,
+    letter case and Windows short names resolved), so the file that is read, written and
+    scope-checked is the file that actually changes. Components that could alias another
+    name on Windows/macOS (``.git.``, ``.git ``, ``GIT~1``, ``x:stream``, invisible format
+    characters — see ``scope_guard.unsafe_component_reason``) are rejected before resolving,
+    and a target whose canonical path enters ``.git`` is rejected after resolving.
+    """
     p = _clean_path(path or "")
     if not p:
         return None, "the path is empty"
@@ -499,10 +542,10 @@ def _check_path(root: Path, path: str) -> tuple[str | None, str | None]:
         return None, "the path points at the repository root"
     if ".." in parts:
         return None, "'..' components are not allowed (the path must stay inside the repository)"
-    if any(part.lower() == ".git" for part in parts):
-        return None, "paths inside .git/ are not allowed"
-    if any(":" in part for part in parts):
-        return None, "':' is not allowed in paths"
+    for part in parts:
+        reason = unsafe_component_reason(part)
+        if reason:
+            return None, reason
     rel = "/".join(parts)
     try:
         root_resolved = Path(root).resolve()
@@ -511,7 +554,21 @@ def _check_path(root: Path, path: str) -> tuple[str | None, str | None]:
         return None, f"the path cannot be resolved ({exc})"
     if target == root_resolved or not target.is_relative_to(root_resolved):
         return None, "the path resolves outside the repository (symlink?)"
-    return rel, None
+    canonical = target.relative_to(root_resolved).parts
+    if not canonical:
+        return None, "the path points at the repository root"
+    for part in canonical:
+        reason = unsafe_component_reason(part)
+        if reason:
+            return None, f"the path resolves to '{'/'.join(canonical)}': {reason}"
+    return "/".join(canonical), None
+
+
+def resolve_repo_path(root: Path, path: str) -> str | None:
+    """Canonical repo-relative path for ``path`` when it is safe to read or write, else None.
+
+    Use it before reading any model- or output-supplied path from disk (e.g. in recovery)."""
+    return _check_path(root, path)[0]
 
 
 def _suggest_paths(root: Path, rel: str) -> list[str]:
@@ -643,19 +700,62 @@ def _reindent(lines: list[str], s_ind: str, w_ind: str) -> list[str]:
     return out
 
 
-def _find_replace_present(content: str, replace: str) -> tuple[str, int] | None:
-    """(mode, 1-based line) if the REPLACE text already exists in ``content``."""
+def _replace_locations(content: str, replace: str) -> list[tuple[str, int, int]]:
+    """Every place the REPLACE text already exists: (mode, first line, last line), 1-based."""
     if not replace.strip():
-        return None
+        return []
+    n = max(1, len(_split_lines(replace)))
     positions = _find_exact(content, replace)
     if positions:
-        return "exact", _line_of(content, positions[0])
+        return [("exact", _line_of(content, p), _line_of(content, p) + n - 1) for p in positions]
     c_lines, r_lines = _split_lines(content), _split_lines(replace)
     for mode in ("trailing_ws", "indent"):
         hits = _find_windows(c_lines, r_lines, mode)
-        if len(hits) == 1:
-            return mode, hits[0] + 1
+        if hits:
+            return [(mode, h + 1, h + n) for h in hits]
+    return []
+
+
+def _find_replace_present(content: str, search: str, replace: str) -> tuple[str, int] | None:
+    """
+    (mode, 1-based line) if the edit looks already applied: the REPLACE text exists *where the
+    SEARCH text best matches* the current file. REPLACE merely appearing somewhere (say, in
+    another function) is not evidence that this edit was applied, so that is a missing SEARCH.
+    """
+    locations = _replace_locations(content, replace)
+    if not locations:
+        return None
+    best = locate_best_match(content, search)
+    if best is None:
+        return None
+    for mode, first, last in locations:
+        if first <= best["end_line"] and last >= best["start_line"]:
+            return mode, first
     return None
+
+
+def _strip_trailing_blank_lines(edit: Edit) -> Edit | None:
+    """
+    The edit with trailing blank lines removed from SEARCH (and as many from REPLACE), or None.
+
+    Models often copy a phantom empty last line from a rendered file block into SEARCH; at the
+    end of a file that line does not exist, so the SEARCH can never match as written.
+    """
+    s_lines = _split_lines(edit.search)
+    k = 0
+    while k < len(s_lines) and not s_lines[len(s_lines) - 1 - k].strip():
+        k += 1
+    if k == 0 or k == len(s_lines):
+        return None
+    r_lines = _split_lines(edit.replace)
+    j = 0
+    while j < min(k, len(r_lines)) and not r_lines[len(r_lines) - 1 - j].strip():
+        j += 1
+    search = _join_lines(s_lines[:len(s_lines) - k])
+    replace = _join_lines(r_lines[:len(r_lines) - j])
+    if search == replace:
+        return None
+    return dc_replace(edit, search=search, replace=replace)
 
 
 _TOKEN_RE = re.compile(r"\w{2,}")
@@ -787,55 +887,12 @@ def _fail(edit: Edit, kind: str, message: str, **extra: Any) -> EditOutcome:
     return EditOutcome(edit=edit, status=FAILED, error=message, error_kind=kind, **extra)
 
 
-def _plan_one(root: Path, states: dict[str, _FileState], edit: Edit, index: int) -> EditOutcome:
-    rel, reason = _check_path(root, edit.file)
-    if rel is None:
-        return _fail(edit, "unsafe_path", f"Edit #{index} ({edit.file!r}): unsafe path: {reason}.")
+def _match_and_apply(state: _FileState, edit: Edit, label: str) -> EditOutcome | None:
+    """Exact, then whitespace-tolerant matching of ``edit`` against ``state`` (applied in place).
 
-    edit = dc_replace(edit, file=rel, search=_lf(edit.search or ""), replace=_lf(edit.replace or ""))
-    label = f"Edit #{index} ({rel})"
-    search, replace, expected = edit.search, edit.replace, edit.expected_occurrences
-
-    if expected < 1:
-        return _fail(edit, "occurrence_mismatch", f"{label}: expected occurrences must be at least 1 (got {expected}).")
-
-    state = states.get(rel)
-    if state is None:
-        try:
-            state = _load_state(root, rel)
-        except IsADirectoryError:
-            return _fail(edit, "file_not_found", f"{label}: '{rel}' is a directory, not a file.")
-        except OSError as exc:
-            return _fail(edit, "file_not_found", f"{label}: cannot read '{rel}': {exc}.")
-        states[rel] = state
-
-    # --- empty SEARCH: create a new file (or fill an existing empty one) ---------------
-    if search == "":
-        if not state.exists:
-            state.content, state.created, state.trailing_newline = _ensure_eol(replace), True, True
-            return EditOutcome(edit=edit, status=APPLIED, matched="new_file", line=1)
-        if edit.create:
-            return _fail(edit, "file_exists",
-                         f"{label}: cannot create '{rel}': the file already exists. "
-                         "Edit it with a SEARCH/REPLACE block that copies the lines to change.")
-        if state.content == "":
-            state.content = _ensure_eol(replace)
-            return EditOutcome(edit=edit, status=APPLIED, matched="exact", line=1)
-        return _fail(edit, "empty_search",
-                     f"{label}: SEARCH is empty but '{rel}' already exists. Put the exact lines to change "
-                     "in SEARCH (to insert code, SEARCH for the neighbouring lines and repeat them in REPLACE).")
-
-    if not state.exists:
-        message = (f"{label}: file '{rel}' does not exist. To create it, write 'FILE: {rel} (new)' "
-                   "with an empty SEARCH section.")
-        suggestions = _suggest_paths(root, rel)
-        if suggestions:
-            message += " Did you mean: " + ", ".join(suggestions) + "?"
-        return _fail(edit, "file_not_found", message)
-
-    if search == replace:
-        return _fail(edit, "no_change", f"{label}: SEARCH and REPLACE are identical, so the edit changes nothing.")
-
+    Returns the outcome (applied, already applied inside an identical REPLACE copy, or an
+    ambiguity / occurrence failure), or None when the SEARCH text was not found at all."""
+    rel, search, replace, expected = state.path, edit.search, edit.replace, edit.expected_occurrences
     content = state.content
 
     # --- 1. exact match -------------------------------------------------------------
@@ -901,11 +958,78 @@ def _plan_one(root: Path, states: dict[str, _FileState], edit: Edit, index: int)
             state.content = _join_lines(out)
             return EditOutcome(edit=edit, status=APPLIED, matched=mode,
                                occurrences_found=len(hits), line=lines[0])
+    return None
 
-    # --- 3. already applied? ------------------------------------------------------------
-    present = _find_replace_present(content, replace)
-    if present:
-        return EditOutcome(edit=edit, status=ALREADY_APPLIED, matched=present[0], line=present[1])
+
+def _plan_one(root: Path, states: dict[str, _FileState], edit: Edit, index: int) -> EditOutcome:
+    rel, reason = _check_path(root, edit.file)
+    if rel is None:
+        return _fail(edit, "unsafe_path", f"Edit #{index} ({edit.file!r}): unsafe path: {reason}.",
+                     path_rejected=True)
+
+    edit = dc_replace(edit, file=rel, search=_lf(edit.search or ""), replace=_lf(edit.replace or ""))
+    label = f"Edit #{index} ({rel})"
+    search, replace, expected = edit.search, edit.replace, edit.expected_occurrences
+
+    if expected < 1:
+        return _fail(edit, "occurrence_mismatch", f"{label}: expected occurrences must be at least 1 (got {expected}).")
+
+    state = states.get(rel)
+    if state is None:
+        try:
+            state = _load_state(root, rel)
+        except IsADirectoryError:
+            return _fail(edit, "file_not_found", f"{label}: '{rel}' is a directory, not a file.")
+        except OSError as exc:
+            return _fail(edit, "file_not_found", f"{label}: cannot read '{rel}': {exc}.")
+        states[rel] = state
+
+    # --- empty SEARCH: create a new file (or fill an existing empty one) ---------------
+    if search == "":
+        if not state.exists:
+            state.content, state.created, state.trailing_newline = _ensure_eol(replace), True, True
+            return EditOutcome(edit=edit, status=APPLIED, matched="new_file", line=1)
+        if edit.create:
+            return _fail(edit, "file_exists",
+                         f"{label}: cannot create '{rel}': the file already exists. "
+                         "Edit it with a SEARCH/REPLACE block that copies the lines to change.")
+        if state.content == "":
+            state.content = _ensure_eol(replace)
+            return EditOutcome(edit=edit, status=APPLIED, matched="exact", line=1)
+        return _fail(edit, "empty_search",
+                     f"{label}: SEARCH is empty but '{rel}' already exists. Put the exact lines to change "
+                     "in SEARCH (to insert code, SEARCH for the neighbouring lines and repeat them in REPLACE).")
+
+    if not state.exists:
+        message = (f"{label}: file '{rel}' does not exist. To create it, write 'FILE: {rel} (new)' "
+                   "with an empty SEARCH section.")
+        suggestions = _suggest_paths(root, rel)
+        if suggestions:
+            message += " Did you mean: " + ", ".join(suggestions) + "?"
+        return _fail(edit, "file_not_found", message)
+
+    if search == replace:
+        return _fail(edit, "no_change", f"{label}: SEARCH and REPLACE are identical, so the edit changes nothing.")
+
+    outcome = _match_and_apply(state, edit, label)
+    stripped = None
+    if outcome is None:
+        # A phantom trailing blank line copied from a rendered file block (see
+        # _strip_trailing_blank_lines): retry without it, with the same matching rules.
+        stripped = _strip_trailing_blank_lines(edit)
+        if stripped is not None:
+            outcome = _match_and_apply(state, stripped, label)
+    if outcome is not None:
+        return outcome
+    content = state.content
+
+    # --- 3. already applied (REPLACE present where SEARCH best matches)? -----------------
+    for candidate in (edit, stripped):
+        if candidate is None:
+            continue
+        present = _find_replace_present(content, candidate.search, candidate.replace)
+        if present:
+            return EditOutcome(edit=candidate, status=ALREADY_APPLIED, matched=present[0], line=present[1])
 
     # --- 4. genuinely missing -----------------------------------------------------------
     best = locate_best_match(content, search)

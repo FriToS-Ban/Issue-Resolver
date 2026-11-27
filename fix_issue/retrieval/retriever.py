@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from fix_issue.retrieval.embeddings import EmbeddingBackend, EmbeddingCache, LocalNgramEmbedder, cosine
-from fix_issue.retrieval.index import RepoIndex, Symbol, file_tokens, symbol_document
+from fix_issue.retrieval.index import RepoIndex, Symbol, file_tokens, safe_repo_file, symbol_document
 from fix_issue.retrieval.lexical import BM25
 from fix_issue.retrieval.mentions import Mentions, extract_mentions
 from fix_issue.retrieval.text import COMMON_CODE_NAMES, tokenize
@@ -414,8 +414,8 @@ class RepositoryRetriever:
         outline plus the full text of the focus symbols (always real, contiguous source).
         ``live=True`` re-reads every file from disk so the prompt reflects edits made so far."""
         entries: list[tuple[str, list[str], list[str]]] = [(f.path, f.reasons, f.symbols) for f in result.files]
-        for p in extra_paths or []:
-            if (p in self.index.files or (self.root / p).is_file()) and all(p != e[0] for e in entries):
+        for p in extra_paths or []:   # plan output (LLM-written): must stay inside the clone
+            if (p in self.index.files or safe_repo_file(self.root, p)) and all(p != e[0] for e in entries):
                 entries.insert(0, (p, ["file the plan expects to change"], []))
         for t in result.tests[:include_tests]:
             if all(t.path != e[0] for e in entries):
@@ -425,16 +425,23 @@ class RepositoryRetriever:
         for i, (path, reasons, symbols) in enumerate(entries):
             fi = self.index.files.get(path)
             if fi is None or live:
-                p = self.root / path
-                if not p.is_file():
+                # Re-read from disk: test code may have swapped a file for a symlink since indexing.
+                p = safe_repo_file(self.root, path)
+                if p is None:
                     continue
-                text = p.read_text(encoding="utf-8", errors="replace")
+                try:
+                    text = p.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
             else:
                 text = fi.text
             share = max(2000, remaining // max(1, len(entries) - i))
             why = "; ".join(reasons[:2])
             if len(text) <= share * 1.3:
-                block = f"### {path}\n(why: {why})\n```\n{text}\n```"
+                # No trailing newline inside the fence: an extra "\n" renders as a phantom empty
+                # last line that models copy into SEARCH (which then cannot match at EOF).
+                shown = text.rstrip("\n")
+                block = f"### {path}\n(why: {why})\n```\n{shown}\n```"
             else:
                 block = self._excerpt(path, text, symbols, share, why)
             parts.append(block)

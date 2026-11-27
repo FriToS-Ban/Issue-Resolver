@@ -455,3 +455,193 @@ def test_report_to_dict_and_messages(tmp_path):
     assert {f["category"] for f in data["findings"]} == {"secrets", "auth"}
     assert ".env" in report.blocking_message() and "auth" not in report.blocking_message()
     assert "app/auth/x.py" in report.review_message()
+
+
+# ===========================================================================
+# Hardening: alias paths, policy files, base-commit policy, coverage, char budget
+# ===========================================================================
+
+import subprocess  # noqa: E402
+
+from fix_issue.scope_guard import DEFAULT_RULES, load_policy  # noqa: E402
+
+PERMISSIVE = (
+    '[[rule]]\ncategory = "anything"\n'
+    'patterns = [".github/**", ".fix-issue-scope.toml", ".fix-issue-ignore", "**"]\nseverity = "info"\n'
+)
+
+
+def _git(root: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True)
+
+
+def _repo(root: Path, files: dict[str, str]) -> Path:
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@example.invalid")
+    _git(root, "config", "user.name", "t")
+    _git(root, "config", "commit.gpgsign", "false")
+    for rel, text in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "base", "--allow-empty")
+    return root
+
+
+@pytest.mark.parametrize("path", [
+    ".github/workflows./ci.yml", ".github/workflows /ci.yml", "GITHUB~1/WORKFL~1/ci.yml",
+    ".git./hooks/pre-push", ".git/hooks/pre-push", "sub/.GIT/config", "src/app.py:stream",
+    "PRE-CO~1.YAM", "../outside.py",
+])
+def test_alias_paths_are_unsafe_and_block(tmp_path, path):
+    assert classify_path(path) == "unsafe_path"
+    report = evaluate(_gdiff(path), tmp_path)
+    assert not report.ok
+    assert [f.category for f in report.findings if f.severity == "block"] == ["unsafe_path"]
+    assert set(report.categories.values()) == {"unsafe_path"}
+
+
+@pytest.mark.parametrize("path", [".fix-issue-scope.toml", ".fix-issue-ignore", "sub/.FIX-ISSUE-IGNORE"])
+def test_policy_files_always_block_even_when_repo_rules_say_info(tmp_path, path):
+    (tmp_path / ".fix-issue-scope.toml").write_text(PERMISSIVE)
+    assert classify_path(path, load_rules(tmp_path)) == "policy"
+    report = evaluate(_gdiff(path), tmp_path)
+    assert not report.ok and _by(report, "policy")[0].severity == "block"
+
+
+def test_policy_is_read_from_base_commit_not_working_tree(tmp_path):
+    # Reviewer's repro: attempt 1 writes a permissive rule (on disk), attempt 2 edits CI.
+    _repo(tmp_path, {"app.py": "x = 1\n", ".github/workflows/ci.yml": "on: push\n"})
+    (tmp_path / ".fix-issue-scope.toml").write_text(PERMISSIVE)
+    policy = load_policy(tmp_path)
+    assert policy.source == "git:HEAD" and len(policy.rules) == len(DEFAULT_RULES)
+    report = evaluate(_gdiff(".github/workflows/ci.yml"), tmp_path)
+    assert not report.ok and _by(report, "ci")[0].severity == "block"
+
+
+def test_committed_repo_rules_still_apply(tmp_path):
+    rule = '[[rule]]\ncategory = "generated"\npatterns = ["src/generated/**"]\nseverity = "block"\n'
+    _repo(tmp_path, {".fix-issue-scope.toml": rule})
+    (tmp_path / ".fix-issue-scope.toml").write_text("")      # emptied in the working tree
+    report = evaluate(_gdiff("src/generated/api.py"), tmp_path)
+    assert not report.ok and _by(report, "generated")[0].severity == "block"
+
+
+def test_base_contents_take_precedence_over_head(tmp_path):
+    # e.g. test code committed a permissive policy on top of the base and restored the file:
+    # the orchestrator's base_contents (read from the base SHA) are what counts.
+    _repo(tmp_path, {".fix-issue-scope.toml": PERMISSIVE})
+    report = evaluate(_gdiff(".github/workflows/ci.yml"), tmp_path,
+                      base_contents={".fix-issue-scope.toml": None})
+    assert not report.ok and _by(report, "ci")
+
+
+def test_explicit_policy_snapshot_pins_the_rules(tmp_path):
+    _repo(tmp_path, {"app.py": "x = 1\n"})
+    policy = load_policy(tmp_path)                            # taken before any repo code runs
+    (tmp_path / ".fix-issue-scope.toml").write_text(PERMISSIVE)
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "test code commits a new policy")
+    report = evaluate(_gdiff(".github/workflows/ci.yml"), tmp_path, policy=policy)
+    assert not report.ok and _by(report, "ci")
+
+
+def test_working_tree_ignore_patterns_only_add_restrictions(tmp_path):
+    _repo(tmp_path, {".fix-issue-ignore": "vendor/**\n"})
+    (tmp_path / ".fix-issue-ignore").write_text("legacy/**\n")    # base pattern removed on disk
+    assert load_policy(tmp_path).ignore_patterns == ["vendor/**", "legacy/**"]
+    assert _by(evaluate(_gdiff("vendor/lib.py"), tmp_path), "ignored")
+    assert _by(evaluate(_gdiff("legacy/old.py"), tmp_path), "ignored")
+
+
+def test_unreadable_git_policy_is_flagged_and_working_tree_not_trusted(tmp_path):
+    (tmp_path / ".git").write_text("gitdir: does-not-exist\n")
+    (tmp_path / ".fix-issue-scope.toml").write_text(PERMISSIVE)
+    report = evaluate(_gdiff(".github/workflows/ci.yml"), tmp_path)
+    assert not report.ok and _by(report, "ci")
+    assert report.requires_review and _by(report, "config")[0].severity == "review"
+
+
+def test_legacy_check_blocks_policy_and_alias_paths(tmp_path):
+    for path in (".fix-issue-ignore", ".fix-issue-scope.toml", ".git./hooks/pre-commit", "GIT~1/config"):
+        with pytest.raises(ScopeViolation):
+            check(_gdiff(path), tmp_path, max_diff_lines=150)
+
+
+def test_legacy_check_reads_ignore_file_from_base_commit(tmp_path):
+    _repo(tmp_path, {".fix-issue-ignore": "auth/**\n"})
+    (tmp_path / ".fix-issue-ignore").write_text("# emptied by an earlier attempt\n")
+    with pytest.raises(ScopeViolation):
+        check(_gdiff("auth/login.py"), tmp_path, max_diff_lines=150)
+
+
+@pytest.mark.parametrize("path,category,severity", [
+    (".github/actions/setup/action.yml", "ci", "block"), (".github/CODEOWNERS", "ci", "block"),
+    (".github/dependabot.yml", "ci", "block"), ("CODEOWNERS", "ci", "block"),
+    ("docs/CODEOWNERS", "ci", "block"), (".pre-commit-config.yaml", "ci", "block"),
+    (".travis.yml", "ci", "block"), (".gitlab-ci.yml", "ci", "block"), ("azure-pipelines.yml", "ci", "block"),
+    ("Jenkinsfile", "ci", "block"), (".circleci/config.yml", "ci", "block"),
+    (".npmrc", "secrets", "block"), ("web/.npmrc", "secrets", "block"), (".pypirc", "secrets", "block"),
+    (".gitattributes", "git_metadata", "block"), (".gitmodules", "git_metadata", "block"),
+    ("package.json", "build", "review"), ("setup.py", "build", "review"), ("setup.cfg", "build", "review"),
+    ("tox.ini", "build", "review"), ("noxfile.py", "build", "review"), ("Makefile", "build", "review"),
+    ("pyproject.toml", "build", "review"), ("requirements-dev.txt", "build", "review"),
+])
+def test_automation_credentials_git_metadata_and_build_files(tmp_path, path, category, severity):
+    assert classify_path(path) == category
+    report = evaluate(_gdiff(path), tmp_path)
+    assert _by(report, category)[0].severity == severity
+    assert report.ok is (severity != "block")
+
+
+def test_fixture_manifests_under_tests_stay_tests():
+    assert classify_path("tests/fixtures/package.json") == "tests"
+    assert classify_path("docs/Makefile") == "docs"
+
+
+def test_single_huge_line_exceeds_char_budget(tmp_path):
+    big = ("diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x = 1\n+x = 1; "
+           + "y = 2; " * 50000 + "\n")
+    report = evaluate(big, tmp_path, 10, ScopeConstraints(max_diff_lines=10))
+    assert report.raw_lines == 2 and report.raw_chars > 350_000 and report.char_limit == 2000
+    assert not report.ok
+    assert any("characters" in f.message for f in _by(report, "size") if f.severity == "block")
+    assert report.to_dict()["char_limit"] == 2000
+
+
+def test_char_budget_allows_normal_diffs_and_follows_the_tightened_limit(tmp_path):
+    assert evaluate(_gdiff("src/app.py", plus=100, minus=40), tmp_path).ok
+    head = "diff --git a/src/app.py b/src/app.py\n--- a/src/app.py\n+++ b/src/app.py\n@@ -1,2 +1,2 @@\n"
+    long_lines = head + "".join(f"-{'a' * 300}\n" for _ in range(2)) + "".join(f"+{'b' * 300}\n" for _ in range(2))
+    assert evaluate(long_lines, tmp_path).ok                                    # 1200 chars <= 30000
+    tight = evaluate(long_lines, tmp_path, 150, ScopeConstraints(max_diff_lines=5))
+    assert not tight.ok and tight.char_limit == 1000
+
+
+def test_triage_forbidden_globs_do_not_block_test_files(tmp_path):
+    constraints = ScopeConstraints(forbidden_paths=["tests/**", "src/core/**"])
+    assert evaluate(_gdiff("tests/test_cart.py", new=True), tmp_path, constraints=constraints).ok
+    report = evaluate(_gdiff("src/core/engine.py"), tmp_path, constraints=constraints)
+    assert not report.ok and _by(report, "triage")[0].severity == "block"
+
+
+def test_test_files_still_subject_to_hard_and_repo_blocks(tmp_path):
+    (tmp_path / ".fix-issue-ignore").write_text("tests/golden/**\n")
+    constraints = ScopeConstraints(forbidden_paths=["tests/**"])
+    for path, category in [("tests/golden/out.txt", "ignored"), ("tests/.env", "secrets"),
+                           ("tests/.fix-issue-scope.toml", "policy"), ("tests/.git./x", "unsafe_path")]:
+        report = evaluate(_gdiff(path), tmp_path, constraints=constraints)
+        assert not report.ok and _by(report, category), path
+
+
+@pytest.mark.parametrize("header", [
+    "new file mode 120000\nindex 0000000..1111111\n",       # new symlink
+    "index 1111111..2222222 120000\n",                     # symlink retargeted
+    "old mode 100644\nnew mode 160000\n",                  # becomes a submodule gitlink
+])
+def test_symlink_and_gitlink_entries_block(tmp_path, header):
+    diff = (f"diff --git a/docs/link.md b/docs/link.md\n{header}--- a/docs/link.md\n+++ b/docs/link.md\n"
+            "@@ -1 +1 @@\n-x\n+/home/user/.ssh/id_rsa\n")
+    report = evaluate(diff, tmp_path)
+    assert not report.ok and _by(report, "special_file")[0].severity == "block"

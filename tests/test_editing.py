@@ -15,6 +15,7 @@ from fix_issue.editing import (
     locate_best_match,
     parse_edit_response,
     plan_edits,
+    resolve_repo_path,
     unified_diff,
     validate_syntax,
     write_edits,
@@ -241,11 +242,31 @@ def test_locate_best_match_direct():
 
 
 def test_already_applied_detected_when_replace_present(tmp_path):
+    # A re-sent edit: REPLACE (with its context line) sits where the SEARCH best matches.
     _write(tmp_path, "calc.py", CALC.replace("return a - b", "return b - a"))
-    result = plan_edits(tmp_path, [Edit("calc.py", "    return a - b\n", "    return b - a\n")])
+    edit = Edit("calc.py", "def sub(a, b):\n    return a - b\n", "def sub(a, b):\n    return b - a\n")
+    result = plan_edits(tmp_path, [edit])
     assert result.ok
     assert result.outcomes[0].status == "already_applied"
     assert result.new_contents == {} and result.diff == ""
+
+
+def test_replace_text_elsewhere_is_not_already_applied(tmp_path):
+    # The REPLACE line exists in another function; the (wrong) SEARCH best-matches second().
+    _write(tmp_path, "m.py", _dedent("""
+        def first(x):
+            return None
+
+
+        def second(y):
+            value = compute(y)
+            return value
+    """))
+    result = plan_edits(tmp_path, [Edit("m.py", "    value = compute(y, 1)\n", "    return None\n")])
+    outcome = result.outcomes[0]
+    assert not result.ok
+    assert outcome.status == "failed" and outcome.error_kind == "missing_search"
+    assert outcome.best_match["start_line"] == 6
 
 
 def test_already_applied_when_replace_contains_search(tmp_path):
@@ -624,3 +645,155 @@ def test_format_instructions_describe_the_format():
     for marker in ("INTENT:", "FILE:", "<<<<<<< SEARCH", "=======", ">>>>>>> REPLACE",
                    "(occurrences: N)", "(new)", "CANNOT_FIX:"):
         assert marker in EDIT_FORMAT_INSTRUCTIONS
+
+
+# ---------------------------------------------------------------------------
+# Path aliasing: NTFS trailing dots/spaces, 8.3 short names, streams, symlinks
+# ---------------------------------------------------------------------------
+
+def _git_init(root: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+
+
+@pytest.mark.parametrize("path", [
+    ".git./hooks/pre-commit",          # Windows strips the trailing dot -> .git/hooks
+    ".git /hooks/pre-commit",          # ... and trailing spaces
+    ".git../hooks/pre-commit",
+    "x/.git./config",
+    ".GIT/hooks/pre-commit",
+    "GIT~1/hooks/pre-commit",          # 8.3 short name of .git
+    "git~2/config",
+    "GITHUB~1/WORKFL~1/ci.yml",        # 8.3 short names of .github/workflows
+    ".git::$INDEX_ALLOCATION/hooks/x",  # NTFS directory stream of .git
+    "src/file.py:stream",
+    ".g\u200cit/config",          # HFS+ ignores U+200C -> .git on macOS
+    "src /mod.py",
+    "src./mod.py",
+])
+def test_ntfs_and_hfs_alias_paths_rejected(tmp_path, path):
+    _git_init(tmp_path)
+    result = plan_edits(tmp_path, [Edit(path, "", "#!/bin/sh\necho pwned\n", create=True)])
+    outcome = result.outcomes[0]
+    assert not result.ok
+    assert outcome.error_kind == "unsafe_path" and outcome.path_rejected and outcome.safe_path is None
+    assert result.new_contents == {} and result.original_contents == {}
+    with pytest.raises(EditWriteError):
+        write_edits(tmp_path, result)
+    assert not (tmp_path / ".git" / "hooks" / "pre-commit").exists()
+
+
+def test_write_edits_rechecks_alias_paths(tmp_path):
+    _git_init(tmp_path)
+    forged = EditBatchResult(ok=True, original_contents={".git./hooks/pre-commit": None},
+                             new_contents={".git./hooks/pre-commit": "echo pwned\n"})
+    with pytest.raises(EditWriteError):
+        write_edits(tmp_path, forged)
+    assert not (tmp_path / ".git" / "hooks" / "pre-commit").exists()
+
+
+def test_symlink_into_git_dir_is_rejected_after_resolving(tmp_path):
+    _git_init(tmp_path)
+    try:
+        (tmp_path / "gitlink").symlink_to(tmp_path / ".git", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create symlinks here")
+    result = plan_edits(tmp_path, [Edit("gitlink/hooks/pre-commit", "", "echo pwned\n", create=True)])
+    assert result.outcomes[0].error_kind == "unsafe_path"
+    assert ".git" in result.outcomes[0].error
+
+
+def test_symlinked_path_is_canonicalised_to_its_target(tmp_path):
+    _write(tmp_path, "real/mod.py", "X = 1\n")
+    try:
+        (tmp_path / "alias").symlink_to(tmp_path / "real", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create symlinks here")
+    result = plan_edits(tmp_path, [Edit("alias/mod.py", "X = 1\n", "X = 2\n")])
+    assert result.ok, result.errors
+    assert list(result.new_contents) == ["real/mod.py"]       # what the scope guard sees
+    assert result.outcomes[0].safe_path == "real/mod.py"
+
+
+def test_case_insensitive_filesystem_uses_on_disk_name(tmp_path):
+    _write(tmp_path, "pkg/mod.py", "X = 1\n")
+    if not (tmp_path / "PKG" / "MOD.PY").exists():
+        pytest.skip("case-sensitive file system")
+    result = plan_edits(tmp_path, [Edit("PKG/MOD.PY", "X = 1\n", "X = 2\n")])
+    assert result.ok and list(result.new_contents) == ["pkg/mod.py"]
+
+
+def test_ordinary_paths_still_work_and_are_safe(tmp_path):
+    _write(tmp_path, "src/app.py", "A = 1\n")
+    _write(tmp_path, "tests/test_app.py", "def test_a():\n    assert True\n")
+    result = plan_edits(tmp_path, [
+        Edit("src/app.py", "A = 1\n", "A = 2\n"),
+        Edit("tests/test_app.py", "    assert True\n", "    assert 1\n"),
+        Edit(".github_notes/new.md", "", "x\n", create=True),   # merely starts with .git
+        Edit("docs/v1.2/guide.md", "", "y\n", create=True),
+    ])
+    assert result.ok, result.errors
+    assert all(o.safe_path == o.edit.file and not o.path_rejected for o in result.outcomes)
+    assert resolve_repo_path(tmp_path, "./src\\app.py") == "src/app.py"
+    assert resolve_repo_path(tmp_path, "../etc/passwd") is None
+    assert result.to_dict()["edits"][0]["path_rejected"] is False
+
+
+# ---------------------------------------------------------------------------
+# Phantom trailing blank line in SEARCH
+# ---------------------------------------------------------------------------
+
+def test_trailing_blank_line_in_search_at_eof_still_matches(tmp_path):
+    _write(tmp_path, "m.py", "def f():\n    return 1\n")
+    # The model copied an empty "last line" that the file does not have (window > file).
+    result = plan_edits(tmp_path, [Edit("m.py", "def f():\n    return 1\n\n", "def f():\n    return 2\n\n")])
+    assert result.ok, result.errors
+    assert result.new_contents["m.py"] == "def f():\n    return 2\n"   # no blank line added
+
+
+def test_trailing_blank_line_stripped_only_from_search_when_replace_has_none(tmp_path):
+    _write(tmp_path, "m.py", "A = 1\nB = 2\n")
+    result = plan_edits(tmp_path, [Edit("m.py", "A = 1\nB = 2\n\n\n", "A = 1\nB = 3\n")])
+    assert result.ok, result.errors
+    assert result.new_contents["m.py"] == "A = 1\nB = 3\n"
+
+
+def test_stripped_retry_keeps_ambiguity_checks(tmp_path):
+    _write(tmp_path, "m.py", "x = 1\ny = 2\nx = 1\n")
+    result = plan_edits(tmp_path, [Edit("m.py", "x = 1\n\n", "x = 3\n\n")])
+    assert result.outcomes[0].error_kind == "ambiguous_match"
+
+
+# ---------------------------------------------------------------------------
+# CANNOT_FIX only when it really is the marker
+# ---------------------------------------------------------------------------
+
+def test_prose_starting_with_cannot_fix_does_not_stop_a_valid_edit():
+    text = _dedent("""
+        INTENT:
+        Cannot fix the caller directly, so patch the helper instead.
+
+        FILE: util.py
+        <<<<<<< SEARCH
+        x = 1
+        =======
+        x = 2
+        >>>>>>> REPLACE
+    """)
+    parsed = parse_edit_response(text)
+    assert parsed.cannot_fix is None and len(parsed.edits) == 1
+    assert parsed.format_errors == []
+    assert "Cannot fix the caller directly" in parsed.intent
+
+
+def test_cannot_fix_marker_before_file_blocks_still_counts():
+    text = "CANNOT_FIX: needs a product decision\n\nFILE: util.py\n<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n"
+    parsed = parse_edit_response(text)
+    assert parsed.cannot_fix == "needs a product decision"
+    assert any("both CANNOT_FIX" in e for e in parsed.format_errors)
+
+
+def test_cannot_fix_after_file_blocks_is_ignored_and_prose_counts_without_edits():
+    after = "FILE: util.py\n<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\nCANNOT_FIX: unsure\n"
+    assert parse_edit_response(after).cannot_fix is None
+    alone = parse_edit_response("Cannot fix: the bug is in a vendored binary.")
+    assert alone.cannot_fix == "the bug is in a vendored binary." and alone.edits == []

@@ -20,6 +20,7 @@ Global structures:
 from __future__ import annotations
 
 import ast
+import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -46,6 +47,92 @@ SKIP_DIRS = re.compile(
 )
 MAX_FILE_BYTES = 400_000
 TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|spec)(/|$)|(^|/)test_[^/]*$|_test\.[a-z]+$|\.(spec|test)\.[jt]sx?$")
+_DRIVE = re.compile(r"^[A-Za-z]:")
+
+
+# ---------------------------------------------------------------------------
+# Containment: never read outside the clone
+# ---------------------------------------------------------------------------
+# Everything read here ends up in an LLM prompt (and from there possibly in a public PR), so a
+# symlink or junction in the clone — committed by the repo, or created by test code the model
+# wrote — must never pull in a file from outside it (~/.ssh, ~/.aws, the tool's .env, ...).
+
+def _is_link(path: Path) -> bool:
+    """Symlink or (Windows) junction / mount point."""
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(os.path, "isjunction", None)   # Python 3.12+
+        return bool(is_junction and is_junction(path))
+    except OSError:
+        return True
+
+
+def _inside(path: Path, root_resolved: Path) -> bool:
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
+        return False
+    return resolved != root_resolved and resolved.is_relative_to(root_resolved)
+
+
+def _walk_repo_files(root: Path):
+    """Regular files under ``root``; symlinks/junctions and anything resolving outside are skipped."""
+    try:
+        root_resolved = root.resolve()
+    except (OSError, RuntimeError):
+        return
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        here = Path(dirpath)
+        rel_dir = here.relative_to(root).as_posix()
+        kept = []
+        for d in dirnames:
+            sub = here / d
+            rel = d if rel_dir == "." else f"{rel_dir}/{d}"
+            if SKIP_DIRS.search(rel + "/") or _is_link(sub) or not _inside(sub, root_resolved):
+                continue
+            kept.append(d)
+        dirnames[:] = kept
+        for name in filenames:
+            p = here / name
+            # Contents are only read through safe_repo_file (which also resolves the file).
+            if _is_link(p) or not p.is_file():
+                continue
+            yield p
+
+
+def safe_repo_file(root: Path, rel: str) -> Path | None:
+    """
+    ``root/rel`` when it is a regular file inside the clone, else None.
+
+    Rejects absolute paths, ``..``, and any symlink/junction on the way (resolve() would
+    follow them), and requires the resolved file to be inside the resolved root. Use before
+    every read of a path that came from the index, the plan (LLM output) or the issue.
+    """
+    if not rel or "\x00" in rel:
+        return None
+    norm = rel.replace("\\", "/")
+    if norm.startswith("/") or _DRIVE.match(norm):
+        return None
+    parts = [p for p in norm.split("/") if p not in ("", ".")]
+    if not parts or ".." in parts:
+        return None
+    root = Path(root)
+    try:
+        root_resolved = root.resolve()
+    except (OSError, RuntimeError):
+        return None
+    cur = root
+    for part in parts:
+        cur = cur / part
+        if _is_link(cur):
+            return None
+    try:
+        if not cur.is_file():
+            return None
+    except OSError:
+        return None
+    return cur if _inside(cur, root_resolved) else None
 
 
 @dataclass
@@ -96,9 +183,7 @@ class RepoIndex:
     def build(cls, root: Path, max_files: int = 6000) -> "RepoIndex":
         idx = cls(root)
         paths: list[str] = []
-        for p in sorted(Path(root).rglob("*")):
-            if not p.is_file():
-                continue
+        for p in sorted(_walk_repo_files(Path(root))):
             rel = p.relative_to(root).as_posix()
             if SKIP_DIRS.search(rel):
                 continue
@@ -110,7 +195,9 @@ class RepoIndex:
             ext = Path(rel).suffix.lower()
             if ext not in SOURCE_EXT and ext not in TEXT_EXT:
                 continue
-            p = Path(root) / rel
+            p = safe_repo_file(Path(root), rel)   # re-checked right before the read
+            if p is None:
+                continue
             try:
                 if p.stat().st_size > MAX_FILE_BYTES:
                     continue

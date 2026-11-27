@@ -23,9 +23,17 @@ Default policy
 ==========  ==============================================================  ==================================
 category    default patterns                                                outcome
 ==========  ==============================================================  ==================================
+unsafe_path any component that is ``.git`` (any case), ends in ``.`` or a    block (hard-coded; repo rules
+            space, looks like an 8.3 short name (``GIT~1``), contains ``:``,  cannot override it)
+            ``..``, control or invisible format characters
+policy      ``.fix-issue-scope.toml`` / ``.fix-issue-ignore`` (any level)    block (hard-coded)
 ignored     ``.fix-issue-ignore`` (fnmatch on the full path or basename)     block
-secrets     .env .env.* *.pem *.key **/secrets/** *credentials*             block
-ci          .github/workflows/** .gitlab-ci.yml .circleci/** Jenkinsfile    block
+secrets     .env .env.* *.pem *.key **/secrets/** *credentials* .npmrc       block
+            .pypirc .netrc .git-credentials .yarnrc(.yml) pip.conf
+ci          .github/** .gitlab-ci.yml .gitlab/** .circleci/** Jenkinsfile   block
+            .travis.yml azure-pipelines.yml .pre-commit-config.yaml
+            CODEOWNERS bitbucket-pipelines.yml .drone.yml appveyor.yml ...
+git_metadata .gitattributes .gitmodules                                     block
 lockfile    poetry.lock package-lock.json yarn.lock pnpm-lock.yaml          block
             Pipfile.lock uv.lock Cargo.lock go.sum
 migrations  **/migrations/** **/alembic/** **/*migration*                   new file: review;
@@ -37,6 +45,8 @@ auth        **/auth/** **/*auth*.py **/permission* **/oauth/**              revi
             **/security/** **/login*                                        in the category: block
 payments    **/payment*/** **/payment* **/billing/** **/stripe/**           review, and > 20 changed lines
             **/invoice*                                                     in the category: block
+build       setup.py setup.cfg pyproject.toml tox.ini noxfile.py Makefile   review
+            package.json MANIFEST.in requirements*.txt Pipfile ...
 source      everything else                                                 size weight 1.0
 public_api  non-test Python, when base/new contents are passed: removed     review (names the symbol)
             public function/class/method, changed parameter list (names,
@@ -45,8 +55,11 @@ public_api  non-test Python, when base/new contents are passed: removed     revi
             changes (and changed default *values*) are not API changes.
 deletion    deleted or renamed files                                        review
 binary      ``GIT binary patch`` / ``Binary files ... differ``              block
+special_file symlink (mode 120000) or submodule gitlink (160000) entry      block
 size        effective lines = sum(changed lines x weight) > limit           block
-triage      path matches ``ScopeConstraints.forbidden_paths``               block
+size        effective changed characters > limit x 200 (one huge line must  block
+            not slip under a line budget)
+triage      path matches ``ScopeConstraints.forbidden_paths`` (tests exempt) block
 triage      path outside a non-empty ``allowed_paths`` (tests/docs exempt)  review (triage only saw the
                                                                             issue text, so it cannot block)
 ==========  ==============================================================  ==================================
@@ -78,6 +91,18 @@ A target repo may add rules in ``.fix-issue-scope.toml``::
 Repo rules are tried before the defaults, so a repo may also re-classify its own paths;
 ``.fix-issue-ignore`` and triage constraints always apply on top. Problems in the file are
 reported as ``info`` findings (category ``config``) and the defaults still apply.
+
+Where the policy is read from
+-----------------------------
+The agent must not be able to rewrite the policy that judges it, so neither policy file is
+ever read from the *working tree* of a git checkout (an earlier attempt, or test code the
+model wrote, may have changed it). ``load_policy`` / ``evaluate`` take each file, in order,
+from: an explicit ``policy=`` snapshot; the caller's ``base_contents`` (the orchestrator
+computes those from the base commit); ``git cat-file blob HEAD:<file>`` (the base commit,
+since edits stay uncommitted until the PR is pushed). Only a directory that is not a git
+checkout at all (no ``.git``) falls back to the working-tree files. ``.fix-issue-ignore``
+patterns found in the working tree are *added* to the base ones, since they can only make
+the policy stricter. Edits to either policy file are always blocked (category ``policy``).
 """
 
 from __future__ import annotations
@@ -85,7 +110,9 @@ from __future__ import annotations
 import ast
 import fnmatch
 import functools
+import os
 import re
+import subprocess
 import sys
 import warnings
 from dataclasses import asdict, dataclass, field, replace
@@ -127,6 +154,7 @@ def check(
     ScopeViolation  — with a human-readable explanation.
     """
     _check_diff_size(diff_text, max_diff_lines)
+    _check_protected_paths(diff_text)
     _check_ignored_paths(diff_text, repo_root)
 
 
@@ -168,24 +196,45 @@ def _parse_changed_paths(diff_text: str) -> list[str]:
     return sorted(paths)
 
 
-def _load_ignore_patterns(repo_root: Path) -> list[str]:
-    """
-    Read .fix-issue-ignore from the repo root.
-    Lines starting with # are comments. Blank lines are skipped.
-    """
-    ignore_file = repo_root / ".fix-issue-ignore"
-    if not ignore_file.exists():
+IGNORE_FILE = ".fix-issue-ignore"
+
+
+def _ignore_patterns_from_text(text: str | None) -> list[str]:
+    """Lines starting with # are comments. Blank lines are skipped."""
+    if not text:
         return []
-    lines = ignore_file.read_text(encoding="utf-8").splitlines()
     return [
         line.strip()
-        for line in lines
+        for line in text.splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
 
 
+def _load_ignore_patterns(repo_root: Path) -> list[str]:
+    """
+    Read .fix-issue-ignore from the repo root's WORKING TREE.
+    Only used directly for non-git directories and to add (never remove) patterns on top of
+    the base commit's file; see ``load_policy``.
+    """
+    ignore_file = Path(repo_root) / IGNORE_FILE
+    try:
+        if not ignore_file.is_file():
+            return []
+        return _ignore_patterns_from_text(ignore_file.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return []
+
+
+def _check_protected_paths(diff_text: str) -> None:
+    """Legacy check: unsafe (alias) paths and the scope-policy files are never editable."""
+    for path in _parse_changed_paths(diff_text):
+        reason = protected_path_reason(path)
+        if reason:
+            raise ScopeViolation(f"Diff touches '{path}': {reason}. This path is off-limits for the agent.")
+
+
 def _check_ignored_paths(diff_text: str, repo_root: Path) -> None:
-    patterns = _load_ignore_patterns(repo_root)
+    patterns = load_policy(repo_root).ignore_patterns
     if not patterns:
         return
 
@@ -206,8 +255,16 @@ def _check_ignored_paths(diff_text: str, repo_root: Path) -> None:
 SEVERITIES = ("info", "review", "block")
 _RANK = {s: i for i, s in enumerate(SEVERITIES)}
 SCOPE_CONFIG_FILE = ".fix-issue-scope.toml"
+POLICY_FILES = (SCOPE_CONFIG_FILE, IGNORE_FILE)
 DEFAULT_CATEGORY = "source"
 _EXEMPT_FROM_ALLOWED = ("tests", "docs")
+# Triage only saw the issue text; the implementer is told to add a regression test, so a
+# triage-forbidden glob such as "tests/**" must not block test files. Hard-coded blocks,
+# .fix-issue-ignore and repo/default rules still apply to them.
+_EXEMPT_FROM_FORBIDDEN = ("tests",)
+# Character budget per allowed (effective) changed line: the line limit alone lets one
+# 350 KB line through a 10-line cap. 200 is ~2.5x a long source line.
+CHARS_PER_LINE_BUDGET = 200
 
 
 @dataclass
@@ -237,10 +294,14 @@ class ScopeReport:
     effective_lines: float       # weighted by category
     limit: int                   # effective limit used
     categories: dict[str, str]   # path -> category
+    raw_chars: int = 0           # characters on changed +/- lines (without the +/- marker)
+    effective_chars: float = 0.0 # weighted like effective_lines
+    char_limit: int = 0          # limit x CHARS_PER_LINE_BUDGET
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data["effective_lines"] = round(self.effective_lines, 2)
+        data["effective_chars"] = round(self.effective_chars, 2)
         return data
 
     def blocking_message(self) -> str:
@@ -267,11 +328,31 @@ class PathRule:
         return None
 
 
+# Severity model for the built-in rules (first match wins, so order matters):
+#   block  — files that act with more authority than the code under review, where a fix to an
+#            issue never needs the agent's hand: credentials and registry/auth config (.npmrc,
+#            .pypirc, ... can carry tokens or redirect package installs), CI and repository
+#            automation (everything under .github/ — workflows, composite actions, CODEOWNERS,
+#            dependabot, issue forms — plus other CI systems and pre-commit hooks, which run
+#            code on CI runners and contributors' machines, often with secrets), git metadata
+#            (.gitattributes filters/diff drivers, .gitmodules URLs change what git checks out
+#            and shows in review), and lockfiles.
+#   review — build/packaging/dependency manifests (setup.py, pyproject.toml, package.json,
+#            Makefile, tox.ini, requirements*.txt, ...): a legitimate fix sometimes has to touch
+#            them (a missing dependency, a test-config tweak), but they run at install/build
+#            time and change the supply chain, so a human must look. Listed after tests/docs so a
+#            fixture such as tests/fixtures/package.json stays a test file.
 DEFAULT_RULES: tuple[PathRule, ...] = (
-    PathRule("secrets", [".env", ".env.*", "*.pem", "*.key", "**/secrets/**", "*credentials*"],
+    PathRule("secrets", [".env", ".env.*", "*.pem", "*.key", "**/secrets/**", "*credentials*",
+                         ".npmrc", ".pypirc", ".netrc", "_netrc", ".git-credentials", ".yarnrc",
+                         ".yarnrc.yml", "pip.conf", "pip.ini"],
              "block"),
-    PathRule("ci", [".github/workflows/**", ".gitlab-ci.yml", ".circleci/**", "Jenkinsfile"],
+    PathRule("ci", [".github/**", ".gitlab-ci.yml", ".gitlab/**", ".circleci/**", "Jenkinsfile",
+                    ".travis.yml", "azure-pipelines.yml", "azure-pipelines.yaml", ".azure-pipelines/**",
+                    "bitbucket-pipelines.yml", ".drone.yml", ".buildkite/**", "appveyor.yml",
+                    ".appveyor.yml", ".pre-commit-config.yaml", ".pre-commit-hooks.yaml", "CODEOWNERS"],
              "block"),
+    PathRule("git_metadata", [".gitattributes", ".gitmodules"], "block"),
     PathRule("lockfile", ["poetry.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
                           "Pipfile.lock", "uv.lock", "Cargo.lock", "go.sum"], "block"),
     # Severity is decided per file: new migration -> review, existing one touched -> block.
@@ -283,17 +364,102 @@ DEFAULT_RULES: tuple[PathRule, ...] = (
                       "**/security/**", "**/login*"], "review", max_lines=20),
     PathRule("payments", ["**/payment*/**", "**/payment*", "**/billing/**", "**/stripe/**",
                           "**/invoice*"], "review", max_lines=20),
+    PathRule("build", ["setup.py", "setup.cfg", "pyproject.toml", "tox.ini", "noxfile.py", "Makefile",
+                       "GNUmakefile", "package.json", "MANIFEST.in", "requirements*.txt", "Pipfile",
+                       "Dockerfile", "CMakeLists.txt", "Cargo.toml", "go.mod", "Gemfile", "*.gemspec",
+                       "pom.xml", "build.gradle", "build.gradle.kts"], "review"),
 )
 
 _CATEGORY_TEXT = {
     "secrets": ("a secrets/credentials file", "The agent must never modify secrets."),
-    "ci": ("CI configuration", "CI changes are off-limits for the agent."),
+    "ci": ("CI / repository automation configuration",
+           "CI and automation changes are off-limits for the agent."),
+    "git_metadata": ("git metadata (attributes / submodules)",
+                     "It changes how git checks out and shows the repository; off-limits for the agent."),
     "lockfile": ("a dependency lockfile",
                  "Lockfiles must be regenerated by maintainers, not edited by the agent."),
     "auth": ("authentication/authorization code",
              "Security-sensitive changes always need human review."),
     "payments": ("payments/billing code", "Payment changes always need human review."),
+    "build": ("a build/packaging/dependency file",
+              "Build and dependency changes run at install time and need human review."),
 }
+
+
+# ---------------------------------------------------------------------------
+# Path aliasing (hard-coded, not overridable by repository rules)
+# ---------------------------------------------------------------------------
+
+# Windows 8.3 short names ("GIT~1", "GITHUB~1", "WORKFL~1", "PRE-CO~1.YAM"): on NTFS they open
+# the long-named file or directory, so they can smuggle ".git" / ".github" past name checks.
+_SHORT_NAME_RE = re.compile(r"^[^~./\\]{1,6}~[0-9]+(?:\.[^.~]{0,3})?$")
+# Code points HFS+ ignores in file names (".g\u200cit" opens ".git" on macOS), as in git's
+# core.protectHFS.
+_IGNORABLE_RE = re.compile("[\u200c-\u200f\u202a-\u202e\u2066-\u2069\u206a-\u206f\ufeff]")
+
+
+def unsafe_component_reason(part: str) -> str | None:
+    """
+    Why one path component could alias something the agent must not write, or None.
+
+    Same idea as git's core.protectNTFS/protectHFS: Windows strips trailing dots and spaces
+    (".git." and ".git " are ".git"), 8.3 short names alias long names, ':' selects an NTFS
+    alternate data stream (".git::$INDEX_ALLOCATION" is the .git directory), and macOS ignores
+    some invisible code points. Rejecting these outright is simpler and safer than normalising.
+    """
+    if any(ord(c) < 32 or ord(c) == 127 for c in part):
+        return "the path contains control characters"
+    if part == "..":
+        return "'..' components are not allowed (the path must stay inside the repository)"
+    if _IGNORABLE_RE.search(part):
+        return "the path contains invisible Unicode format characters (macOS ignores them, so the name can alias another file)"
+    if ":" in part:
+        return "':' is not allowed in paths"
+    if part != part.rstrip(". "):
+        return (f"path component {part!r} ends with '.' or a space (Windows strips those, so it would "
+                "alias another file)")
+    if part.lower() == ".git":
+        return "paths inside .git/ are not allowed"
+    if _SHORT_NAME_RE.match(part):
+        return (f"path component {part!r} looks like a Windows 8.3 short name (e.g. GIT~1), which can "
+                "alias another file or directory")
+    return None
+
+
+def unsafe_path_reason(path: str) -> str | None:
+    """First ``unsafe_component_reason`` of any component of a repo-relative path, or None."""
+    for part in path.replace("\\", "/").split("/"):
+        if part in ("", "."):
+            continue
+        reason = unsafe_component_reason(part)
+        if reason:
+            return reason
+    return None
+
+
+def is_policy_file(path: str) -> bool:
+    """True for the scope-policy files (``.fix-issue-scope.toml`` / ``.fix-issue-ignore``) anywhere."""
+    name = _norm_path(path).rsplit("/", 1)[-1].lower()
+    return any(name == p.lower() for p in POLICY_FILES)
+
+
+def protected_path_reason(path: str) -> str | None:
+    """Reason a path is hard-blocked regardless of any rule (alias paths, policy files), or None."""
+    reason = unsafe_path_reason(path)
+    if reason:
+        return reason
+    if is_policy_file(path):
+        return ("it is a scope-policy file (.fix-issue-scope.toml / .fix-issue-ignore); the agent may "
+                "never change the rules that judge its own patch")
+    return None
+
+
+def _hard_category(path: str) -> str | None:
+    if unsafe_path_reason(path):
+        return "unsafe_path"
+    if is_policy_file(path):
+        return "policy"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +536,13 @@ def _match_rule(path: str, rules: list[PathRule] | tuple[PathRule, ...]) -> tupl
 
 
 def classify_path(path: str, rules: list[PathRule] | None = None) -> str:
-    """Category of `path` under `rules` (default: the built-in rules)."""
+    """Category of `path` under `rules` (default: the built-in rules).
+
+    Alias paths (``unsafe_path``) and the policy files (``policy``) are classified before any
+    rule, so no rule can make them look like ordinary source."""
+    hard = _hard_category(path)
+    if hard:
+        return hard
     hit = _match_rule(path, DEFAULT_RULES if rules is None else rules)
     return hit[0].category if hit else DEFAULT_CATEGORY
 
@@ -394,21 +566,135 @@ def _first_match(path: str, patterns: list[str]) -> str | None:
 # Rules loading
 # ---------------------------------------------------------------------------
 
+@dataclass
+class ScopePolicy:
+    """The repository's scope policy as of the base commit: repo rules + defaults, ignore patterns."""
+    rules: list[PathRule]
+    ignore_patterns: list[str] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)    # reported as info findings
+    read_error: str | None = None                        # policy could not be read: review finding
+    source: str = "defaults"                             # explicit | base_contents | git:<ref> | working tree
+
+
+class _PolicyReadError(Exception):
+    pass
+
+
+# Environment variables that would make git read a different repository / object store.
+_GIT_REDIRECT_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+                     "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
+
+
+def _git_base_files(repo_root: Path, ref: str, names: list[str]) -> dict[str, str | None]:
+    """Contents of `names` at commit `ref` (None = absent there), via one ``git cat-file --batch``.
+
+    Reads blobs only (no textconv/filters), ignores ``refs/replace`` and never discovers a
+    parent repository (GIT_CEILING_DIRECTORIES). Raises _PolicyReadError when git fails."""
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_REDIRECT_ENV}
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    try:
+        env["GIT_CEILING_DIRECTORIES"] = str(Path(repo_root).resolve().parent)
+        proc = subprocess.run(
+            ["git", "cat-file", "--batch"], cwd=str(repo_root), env=env, capture_output=True,
+            input="".join(f"{ref}:{name}\n" for name in names).encode("utf-8"), timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise _PolicyReadError(str(exc)) from exc
+    if proc.returncode != 0:
+        raise _PolicyReadError((proc.stderr or b"").decode("utf-8", "replace").strip()[:300]
+                               or f"git exited with {proc.returncode}")
+    data, pos, out = proc.stdout, 0, {}
+    try:
+        for name in names:
+            nl = data.index(b"\n", pos)
+            header = data[pos:nl].decode("utf-8", "replace").split()
+            pos = nl + 1
+            if len(header) == 3 and header[2].isdigit():      # "<oid> <type> <size>"
+                size = int(header[2])
+                out[name] = data[pos:pos + size].decode("utf-8", "replace") if header[1] == "blob" else None
+                pos += size + 1
+            else:                                              # "<ref>:<name> missing" / ambiguous
+                out[name] = None
+    except ValueError as exc:
+        raise _PolicyReadError(f"unexpected git cat-file output ({exc})") from exc
+    return out
+
+
+def _policy_texts(repo_root: Path, ref: str, base_contents: dict[str, str | None] | None
+                  ) -> tuple[dict[str, str | None], str, str | None]:
+    """(file name -> base text or None, source label, read error) for both policy files."""
+    texts: dict[str, str | None] = {}
+    sources: list[str] = []
+    if base_contents:
+        normalised = {_norm_path(k): v for k, v in base_contents.items()}
+        for name in POLICY_FILES:
+            if name in normalised:
+                texts[name] = normalised[name]
+        if texts:
+            sources.append("base_contents")
+    missing = [name for name in POLICY_FILES if name not in texts]
+    error: str | None = None
+    if missing:
+        if not (repo_root / ".git").exists():
+            # Not a git checkout (e.g. a plain directory in unit tests): no base commit to read.
+            for name in missing:
+                p = repo_root / name
+                try:
+                    texts[name] = p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
+                except OSError:
+                    texts[name] = None
+            sources.append("working tree")
+        else:
+            try:
+                texts.update(_git_base_files(repo_root, ref, missing))
+                sources.append(f"git:{ref}")
+            except _PolicyReadError as exc:
+                for name in missing:
+                    texts[name] = None
+                error = (f"Could not read {' / '.join(missing)} from the base commit ({exc}); repository "
+                         f"scope rules were NOT applied (the working-tree copies are never trusted).")
+    return texts, "+".join(sources) or "defaults", error
+
+
+def load_policy(repo_root: Path, ref: str = "HEAD",
+                base_contents: dict[str, str | None] | None = None) -> ScopePolicy:
+    """
+    The scope policy of `repo_root` as of commit `ref` (see "Where the policy is read from").
+
+    Call it once right after the workspace is created (before any repository or model code
+    runs) and pass the result to ``evaluate(..., policy=...)`` to pin the policy for a run.
+    """
+    repo_root = Path(repo_root)
+    texts, source, error = _policy_texts(repo_root, ref, base_contents)
+    rules, problems = _rules_from_text(texts.get(SCOPE_CONFIG_FILE))
+    ignore = _ignore_patterns_from_text(texts.get(IGNORE_FILE))
+    if source != "working tree":
+        # Working-tree ignore patterns can only add restrictions, so honouring them is safe
+        # (and keeps an uncommitted .fix-issue-ignore effective).
+        ignore += [p for p in _load_ignore_patterns(repo_root) if p not in ignore]
+    return ScopePolicy(rules, ignore, problems, error, source)
+
+
 def load_rules(repo_root: Path) -> list[PathRule]:
     """Repo rules from `.fix-issue-scope.toml` (if any) followed by the defaults."""
-    return _load_rules_with_warnings(Path(repo_root))[0]
+    return load_policy(Path(repo_root)).rules
 
 
 def _load_rules_with_warnings(repo_root: Path) -> tuple[list[PathRule], list[str]]:
+    policy = load_policy(Path(repo_root))
+    return policy.rules, policy.problems
+
+
+def _rules_from_text(text: str | None) -> tuple[list[PathRule], list[str]]:
     defaults = [replace(r, patterns=list(r.patterns)) for r in DEFAULT_RULES]
-    cfg_file = repo_root / SCOPE_CONFIG_FILE
-    if not cfg_file.is_file():
+    if text is None:
         return defaults, []
     if tomllib is None:  # pragma: no cover
         return defaults, [f"{SCOPE_CONFIG_FILE} ignored: no TOML parser available."]
     try:
-        raw = tomllib.loads(cfg_file.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        raw = tomllib.loads(text)
+    except (ValueError, RecursionError) as exc:
         return defaults, [f"Could not parse {SCOPE_CONFIG_FILE} ({exc}); using default scope rules only."]
 
     entries = raw.get("rule", [])
@@ -468,9 +754,11 @@ class _FileChange:
     new_path: str | None = None
     added: int = 0
     removed: int = 0
+    chars: int = 0               # characters on +/- lines (without the marker)
     is_new: bool = False
     is_deleted: bool = False
     is_binary: bool = False
+    is_special: bool = False     # symlink (120000) or submodule gitlink (160000) entry
     is_rename: bool = False
     git_header: bool = False
     saw_file_header: bool = False
@@ -491,6 +779,8 @@ class _FileChange:
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
 _GIT_HEADER_RE = re.compile(r'^diff --git "?a/(.+?)"? "?b/(.+?)"?\s*$')
 _BINARY_RE = re.compile(r"^Binary files (.+?) and (.+?) differ\s*$")
+_SPECIAL_MODE_RE = re.compile(
+    r"^(?:(?:new file|deleted file|new|old) mode|index [0-9a-f]+\.\.[0-9a-f]+) (?:120000|160000)\s*$")
 
 
 def _header_path(raw: str) -> str | None:
@@ -516,12 +806,13 @@ def _parse_diff(diff_text: str) -> tuple[list[_FileChange], _FileChange]:
     old_left: int | None = None
     new_left: int | None = None
 
-    def count(tag: str) -> None:
+    def count(tag: str, text: str) -> None:
         target = cur if cur is not None else orphan
         if tag == "+":
             target.added += 1
         else:
             target.removed += 1
+        target.chars += max(0, len(text) - 1)
 
     i = 0
     while i < n:
@@ -549,7 +840,7 @@ def _parse_diff(diff_text: str) -> tuple[list[_FileChange], _FileChange]:
             if not looks_like_header and not line.startswith("@@"):
                 tag = line[:1]
                 if tag in "+-" and tag:
-                    count(tag)
+                    count(tag, line)
                     if tag == "+" and new_left is not None:
                         new_left -= 1
                     elif tag == "-" and old_left is not None:
@@ -603,6 +894,8 @@ def _parse_diff(diff_text: str) -> tuple[list[_FileChange], _FileChange]:
             continue
 
         if cur is not None:
+            if _SPECIAL_MODE_RE.match(line):
+                cur.is_special = True
             if line.startswith("GIT binary patch"):
                 cur.is_binary = True
                 in_binary = True
@@ -619,7 +912,7 @@ def _parse_diff(diff_text: str) -> tuple[list[_FileChange], _FileChange]:
 
         # Lenient: +/- lines outside a recognised hunk still count (hand-written diffs).
         if (line.startswith("+") or line.startswith("-")) and not line.startswith(("---", "+++")):
-            count(line[0])
+            count(line[0], line)
         i += 1
 
     merged: dict[str, _FileChange] = {}
@@ -632,12 +925,15 @@ def _parse_diff(diff_text: str) -> tuple[list[_FileChange], _FileChange]:
         if key is None:
             orphan.added += fc.added
             orphan.removed += fc.removed
+            orphan.chars += fc.chars
             continue
         if key in merged:
             m = merged[key]
             m.added += fc.added
             m.removed += fc.removed
+            m.chars += fc.chars
             m.is_binary |= fc.is_binary
+            m.is_special |= fc.is_special
             m.is_rename |= fc.is_rename
             m.old_path = m.old_path or fc.old_path
         else:
@@ -983,25 +1279,36 @@ def evaluate(
     constraints: ScopeConstraints | None = None,
     base_contents: dict[str, str | None] | None = None,
     new_contents: dict[str, str] | None = None,
+    *,
+    policy: ScopePolicy | None = None,
 ) -> ScopeReport:
     """
     Classify every path the diff touches and report block / review / info findings.
 
     base_contents / new_contents (repo-relative path -> text, None = file absent) enable the
     Python public-API comparison and sharpen the "existing migration" check.
+
+    ``policy`` pins the repository policy (``load_policy(root, base_ref)`` taken before any
+    repository code ran). Without it the policy is read from ``base_contents`` / the HEAD
+    commit — never from working-tree edits (see the module docstring).
     """
     repo_root = Path(repo_root)
-    rules, config_problems = _load_rules_with_warnings(repo_root)
-    ignore_patterns = _load_ignore_patterns(repo_root)
+    if policy is None:
+        policy = load_policy(repo_root, "HEAD", base_contents)
+    rules, ignore_patterns = policy.rules, policy.ignore_patterns
     files, orphan = _parse_diff(diff_text)
     base = {_norm_path(k): v for k, v in base_contents.items()} if base_contents is not None else None
     new = {_norm_path(k): v for k, v in new_contents.items()} if new_contents is not None else None
 
     findings: list[ScopeFinding] = [ScopeFinding("info", "config", SCOPE_CONFIG_FILE, msg)
-                                    for msg in config_problems]
+                                    for msg in policy.problems]
+    if policy.read_error:
+        findings.append(ScopeFinding("review", "config", SCOPE_CONFIG_FILE, policy.read_error))
     categories: dict[str, str] = {}
     raw_lines = orphan.lines
     effective = float(orphan.lines)
+    raw_chars = orphan.chars
+    effective_chars = float(orphan.chars)
     budget_used: dict[str, int] = {}
     budget_limit: dict[str, int] = {}
     budget_paths: dict[str, list[str]] = {}
@@ -1012,12 +1319,25 @@ def evaluate(
     for fc in files:
         path = fc.path
         assert path is not None
-        hit = _strictest(fc, rules)
-        rule, pattern = hit if hit else (None, None)
-        category = rule.category if rule else DEFAULT_CATEGORY
+        hard = next(((p, r) for p in fc.paths() if (r := protected_path_reason(p))), None)
+        if hard:
+            # Alias paths and policy files: blocked before (and regardless of) any rule.
+            hard_path, reason = hard
+            rule, pattern = None, None
+            category = _hard_category(hard_path) or "unsafe_path"
+            findings.append(ScopeFinding(
+                "block", category, path,
+                f"Diff touches '{hard_path}': {reason}. This path is off-limits for the agent."))
+        else:
+            hit = _strictest(fc, rules)
+            rule, pattern = hit if hit else (None, None)
+            category = rule.category if rule else DEFAULT_CATEGORY
         categories[path] = category
+        weight = rule.weight if rule else 1.0
         raw_lines += fc.lines
-        effective += fc.lines * (rule.weight if rule else 1.0)
+        effective += fc.lines * weight
+        raw_chars += fc.chars
+        effective_chars += fc.chars * weight
 
         for p in fc.paths():
             pat = _ignored_match(p, ignore_patterns)
@@ -1028,7 +1348,7 @@ def evaluate(
                     f".fix-issue-ignore. This path is off-limits for the agent."))
                 break
 
-        for p in fc.paths():
+        for p in (fc.paths() if category not in _EXEMPT_FROM_FORBIDDEN else ()):
             pat = _first_match(p, forbidden)
             if pat:
                 findings.append(ScopeFinding(
@@ -1036,6 +1356,12 @@ def evaluate(
                     f"Diff touches '{p}', which {source} marked as off-limits for this issue "
                     f"(forbidden path '{pat}')."))
                 break
+
+        if fc.is_special:
+            findings.append(ScopeFinding(
+                "block", "special_file", path,
+                f"Diff adds or changes a symlink or submodule entry at '{path}'; the agent only proposes "
+                f"regular text files (a symlink can expose files outside the repository)."))
 
         if fc.is_binary:
             findings.append(ScopeFinding(
@@ -1140,6 +1466,14 @@ def evaluate(
             f"x0.5, docs x0.25) exceed the limit of {limit}"
             f"{f' set by {source}' if tightened else ''}. This issue likely requires a larger "
             f"change — needs human review."))
+    char_limit = max(0, limit) * CHARS_PER_LINE_BUDGET
+    if effective_chars > char_limit:
+        findings.append(ScopeFinding(
+            "block", "size", None,
+            f"Diff changes too much text: {effective_chars:g} effective changed characters "
+            f"({raw_chars} raw, weighted like lines) exceed the budget of {char_limit} "
+            f"({CHARS_PER_LINE_BUDGET} per allowed line x {limit}). Very long lines (generated or "
+            f"minified content) are not a small fix — needs human review."))
 
     return ScopeReport(
         ok=not any(f.severity == "block" for f in findings),
@@ -1149,4 +1483,7 @@ def evaluate(
         effective_lines=effective,
         limit=limit,
         categories=categories,
+        raw_chars=raw_chars,
+        effective_chars=effective_chars,
+        char_limit=char_limit,
     )

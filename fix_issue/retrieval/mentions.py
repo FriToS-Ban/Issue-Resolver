@@ -17,6 +17,9 @@ _CODE_EXT = (
 )
 _PATH_RE = re.compile(rf"(?<![\w/.-])((?:[A-Za-z]:)?[\w./\\-]*[\w-]+\.(?:{_CODE_EXT}))\b")
 _PY_FRAME = re.compile(r'File "([^"]+)", line (\d+)(?:, in ([\w<>.]+))?')
+# pytest's own location lines: "pkg/core.py:2: in helper" (--tb=short) or
+# "pkg\core.py:12: AssertionError" (--tb=long; backslashes on Windows).
+_PYTEST_FRAME = re.compile(r"^[ \t]*((?:[A-Za-z]:)?[^\s:\"']+\.pyi?):(\d+):(?: in ([\w<>.]+))?", re.MULTILINE)
 _JS_FRAME = re.compile(r"at (?:([\w$.<>\[\] ]+?) \()?((?:[A-Za-z]:)?[^\s():]+\.(?:js|jsx|ts|tsx|mjs|cjs)):(\d+)(?::\d+)?\)?")
 _JAVA_FRAME = re.compile(r"at ([\w$.]+)\.([\w$<>]+)\((\w+\.(?:java|kt)):(\d+)\)")
 _GO_FRAME = re.compile(r"^\s*((?:[A-Za-z]:)?[^\s:]+\.go):(\d+)", re.MULTILINE)
@@ -109,6 +112,12 @@ def extract_mentions(text: str, repo_files: list[str]) -> Mentions:
         resolved = resolve_path(fm.group(1), repo_files)
         if resolved:
             m.frames.append(Frame(resolved, int(fm.group(2)), fm.group(3), fm.group(0)))
+            add_path(resolved)
+    native = {(f.path, f.line) for f in m.frames}
+    for fm in _PYTEST_FRAME.finditer(text):
+        resolved = resolve_path(fm.group(1).replace("\\", "/"), repo_files)
+        if resolved and (resolved, int(fm.group(2))) not in native:
+            m.frames.append(Frame(resolved, int(fm.group(2)), fm.group(3), fm.group(0).strip()))
             add_path(resolved)
     for fm in _JS_FRAME.finditer(text):
         resolved = resolve_path(fm.group(2), repo_files)

@@ -200,3 +200,111 @@ def test_retrieval_metrics():
                           ["g"], "x", False)
     m = retrieval_metrics(res, ["b.py"], ["f", "zz"])
     assert m["recall@1"] == 0 and m["recall@3"] == 1.0 and m["mrr"] == 0.5 and m["symbol_recall"] == 0.5
+
+
+# --- containment: nothing outside the clone reaches a prompt ---------------------------
+
+import os  # noqa: E402
+
+from fix_issue.retrieval.index import safe_repo_file  # noqa: E402
+
+
+def _symlink(link: Path, target: Path, is_dir: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=is_dir)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create symlinks here")
+
+
+def _outside_secret(tmp_path_factory) -> Path:
+    secret = tmp_path_factory.mktemp("outside") / "host-secret.md"
+    secret.write_text("HOST_SECRET_VALUE\n", encoding="utf-8")
+    return secret
+
+
+def test_index_skips_symlinked_file_pointing_outside(shop, tmp_path_factory):
+    secret = _outside_secret(tmp_path_factory)
+    (shop / "docs").mkdir()
+    _symlink(shop / "docs" / "notes.md", secret)
+    idx = RepoIndex.build(shop)
+    assert "docs/notes.md" not in idx.files and "docs/notes.md" not in idx.all_paths
+    assert all("HOST_SECRET_VALUE" not in fi.text for fi in idx.files.values())
+    assert "shop/checkout.py" in idx.files                       # ordinary files still indexed
+
+
+def test_index_does_not_walk_symlinked_directories(shop, tmp_path_factory):
+    secret = _outside_secret(tmp_path_factory)
+    _symlink(shop / "vendored_docs", secret.parent, is_dir=True)
+    idx = RepoIndex.build(shop)
+    assert not any(p.startswith("vendored_docs/") for p in idx.all_paths)
+
+
+def test_index_does_not_walk_junctions(shop, tmp_path_factory):
+    winapi = pytest.importorskip("_winapi")
+    if not hasattr(winapi, "CreateJunction"):
+        pytest.skip("no junction support")
+    secret = _outside_secret(tmp_path_factory)
+    junction = shop / "linked"
+    winapi.CreateJunction(str(secret.parent), str(junction))
+    try:
+        idx = RepoIndex.build(shop)
+        assert not any(p.startswith("linked/") for p in idx.all_paths)
+        assert safe_repo_file(shop, "linked/host-secret.md") is None
+    finally:
+        os.rmdir(junction)                                        # removes the junction only
+
+
+def test_safe_repo_file_rejects_traversal_absolute_and_links(shop, tmp_path_factory):
+    assert safe_repo_file(shop, "shop/checkout.py") == shop / "shop" / "checkout.py"
+    for bad in ("../x.py", "shop/../../x.py", "/etc/passwd", "C:/Windows/win.ini", "", "shop", "missing.py"):
+        assert safe_repo_file(shop, bad) is None, bad
+    secret = _outside_secret(tmp_path_factory)
+    _symlink(shop / "link.md", secret)
+    assert safe_repo_file(shop, "link.md") is None
+
+
+def test_render_context_never_reads_plan_paths_outside_the_clone(shop, tmp_path_factory):
+    secret = _outside_secret(tmp_path_factory)
+    r = RepositoryRetriever(shop)
+    res = r.retrieve("Inventory.available", "", top_n=2)
+    rel = os.path.relpath(secret, shop).replace(os.sep, "/")     # "../outside0/host-secret.md"
+    for live in (True, False):
+        out = r.render_context(res, 10_000, extra_paths=[rel, str(secret)], live=live)
+        assert "HOST_SECRET_VALUE" not in out
+
+
+def test_live_render_skips_a_file_swapped_for_a_symlink(shop, tmp_path_factory):
+    secret = _outside_secret(tmp_path_factory)
+    r = RepositoryRetriever(shop)
+    res = r.retrieve("Inventory.available", "", top_n=2)
+    assert "shop/inventory.py" in res.paths()
+    (shop / "shop" / "inventory.py").unlink()
+    _symlink(shop / "shop" / "inventory.py", secret)              # e.g. done by test code later
+    assert "HOST_SECRET_VALUE" not in r.render_context(res, 10_000, live=True)
+
+
+def test_render_context_has_no_phantom_blank_last_line(shop):
+    r = RepositoryRetriever(shop)
+    res = r.retrieve("Inventory.available", "", top_n=2)
+    out = r.render_context(res, 10_000)
+    assert "        return self._stock[sku]\n```" in out
+    assert "\n\n```" not in out
+
+
+# --- pytest location lines ------------------------------------------------------------
+
+def test_extract_pytest_short_and_long_frames(shop):
+    files = RepoIndex.build(shop).all_paths
+    out = ("tests/test_checkout.py:4: in test_apply\n    assert apply_coupon(1, c, d)\n"
+           + r"shop\inventory.py:6: in available" + "\n    return self._stock[sku]\n"
+           + "E   KeyError: 'X1'\n\nshop/checkout.py:5: KeyError\n")
+    got = [(f.path, f.line, f.function) for f in extract_mentions(out, files).frames]
+    assert ("tests/test_checkout.py", 4, "test_apply") in got
+    assert ("shop/inventory.py", 6, "available") in got
+    assert ("shop/checkout.py", 5, None) in got
+
+
+def test_pytest_frames_do_not_duplicate_native_frames(shop):
+    files = RepoIndex.build(shop).all_paths
+    text = '  File "/srv/shop/inventory.py", line 6, in available\nshop/inventory.py:6: in available\n'
+    assert len(extract_mentions(text, files).frames) == 1
