@@ -38,6 +38,7 @@ def _pct(x: float | None) -> str:
 
 
 def apply_manual(results: list[dict], manual: dict[str, dict]) -> list[dict]:
+    """Override ``issue_fixed`` with a recorded human verdict and re-derive everything that depends on it."""
     out = []
     for r in results:
         r = dict(r)
@@ -45,10 +46,23 @@ def apply_manual(results: list[dict], manual: dict[str, dict]) -> list[dict]:
         if m:
             r["manual_verdict"] = m.get("verdict")
             if r.get("kind") == "fix" and m.get("verdict") in ("correct", "incorrect"):
-                r["issue_fixed_automated"] = r.get("issue_fixed")
+                automated = r.get("issue_fixed_automated", r.get("issue_fixed"))
+                r["issue_fixed_automated"] = automated
                 r["issue_fixed"] = m["verdict"] == "correct"
                 r["success"] = bool(r["issue_fixed"] and r.get("visible_tests_passed") and r.get("scope_respected")
-                                    and r.get("classification_correct") and r.get("patch_applied"))
+                                    and r.get("classification_correct") and r.get("patch_applied")
+                                    and r.get("pipeline_result") in ("dry_run", "pr_opened"))
+                r["first_attempt_success"] = bool(r["success"] and r.get("attempts") == 1)
+                r["tests_pass_but_not_fixed"] = bool(r.get("visible_tests_passed") and r["issue_fixed"] is False
+                                                     and r.get("patch_applied"))
+                previous = r.get("failure_category_automated", r.get("failure_category"))
+                r["failure_category_automated"] = previous
+                if r["success"]:
+                    r["failure_category"] = None
+                elif r["issue_fixed"] is False and (previous is None or automated):
+                    r["failure_category"] = "manual_verdict_incorrect"
+                else:
+                    r["failure_category"] = previous or "manual_verdict_incorrect"
         out.append(r)
     return out
 
@@ -65,6 +79,7 @@ def compute_metrics(results: list[dict], llm_mode: str = "real") -> dict[str, An
         rs = [r for r in results if r.get("difficulty") == d]
         by_diff[d] = {"n": len(rs), "success": sum(bool(r.get("success")) for r in rs),
                       "success_rate": _rate(sum(bool(r.get("success")) for r in rs), len(rs))}
+    # Only cases where retrieval ran; recall is on the initial retrieval's first K files (runner.RECALL_K).
     recalls = [r["retrieval_recall"] for r in fix if r.get("retrieval_recall") is not None]
     verdicts = Counter(r.get("critique_verdict") or "none" for r in fix)
     approved = [r for r in fix if r.get("critique_verdict") == "APPROVED"]
@@ -130,7 +145,7 @@ def render_markdown(data: dict[str, Any], title: str | None = None) -> str:
         f"| Fix-case success | {_pct(m['fix_success_rate'])} |",
         f"| Triage-case success | {_pct(m['triage_case_success_rate'])} |",
         f"| Classification accuracy | {_pct(m['classification_accuracy'])} |",
-        f"| Retrieval recall (expected files retrieved) | {_pct(m['retrieval_mean_recall'])} |",
+        f"| Retrieval recall@5 (initial retrieval, cases where it ran) | {_pct(m['retrieval_mean_recall'])} |",
         f"| Patch application rate | {_pct(m['patch_application_rate'])} |",
         f"| Edit-round apply rate | {_pct(m['edit_round_apply_rate'])} |",
         f"| Visible test pass rate | {_pct(m['test_pass_rate'])} |",
@@ -175,7 +190,7 @@ def render_comparison(a: dict[str, Any], b: dict[str, Any]) -> str:
     ma, mb = a["metrics"], b["metrics"]
     keys = [
         ("success_rate", "Overall success"), ("fix_success_rate", "Fix-case success"),
-        ("classification_accuracy", "Classification accuracy"), ("retrieval_mean_recall", "Retrieval recall"),
+        ("classification_accuracy", "Classification accuracy"), ("retrieval_mean_recall", "Retrieval recall@5"),
         ("patch_application_rate", "Patch application"), ("edit_round_apply_rate", "Edit-round apply rate"),
         ("test_pass_rate", "Visible tests pass"), ("issue_fixed_rate", "Issue fixed (hidden)"),
         ("first_attempt_success_rate", "First-attempt success"), ("scope_respected_rate", "Scope respected"),

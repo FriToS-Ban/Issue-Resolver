@@ -44,12 +44,15 @@ def run_pytest(root: Path, targets: list[str] | None = None, timeout: int = 180)
     else:
         cmd += ["--ignore", HIDDEN_TEST_DIR]
     try:
+        # Decode as UTF-8 explicitly: the Windows default (cp1252) raises on bytes like 0x9D in
+        # pytest output, which turned a graded failure into a harness error.
         proc = subprocess.run(
-            cmd, cwd=str(root), capture_output=True, text=True, timeout=timeout, env=safe_env(),
+            cmd, cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, env=safe_env(),
         )
     except subprocess.TimeoutExpired:
         return False, f"timeout after {timeout}s"
-    return proc.returncode == 0, (proc.stdout + proc.stderr)[-3000:]
+    return proc.returncode == 0, ((proc.stdout or "") + (proc.stderr or ""))[-3000:]
 
 
 def validate_case(case: Case) -> ValidationReport:

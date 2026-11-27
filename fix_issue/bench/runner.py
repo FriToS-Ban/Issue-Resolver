@@ -43,6 +43,8 @@ from fix_issue.run_history import RunRecorder
 
 LLMFactory = Callable[[], tuple[LLMProvider, LLMProvider | None]]
 
+RECALL_K = 5   # retrieval recall is measured on the first K retrieved files (both profiles)
+
 
 class BenchIssueSource:
     def __init__(self, case: Case) -> None:
@@ -105,8 +107,13 @@ def grade_case(case: Case, root: Path, base_sha: str, record: dict[str, Any], re
     """Independent grading of the final working tree + the run record."""
     triage = record.get("triage") or {}
     classification = triage.get("classification")
-    retrieval = record.get("retrieval") or {}
-    retrieved = [f["path"] for f in retrieval.get("files", [])]
+    # Retrieval is scored on the INITIAL retrieval (before the planner asked for more context) and
+    # on its first RECALL_K files, so both profiles are measured on the same footing. Cases where
+    # retrieval never ran (triage stopped the run) have no recall rather than recall 0.
+    retrieval = record.get("retrieval_initial") or record.get("retrieval") or {}
+    retrieval_ran = bool(record.get("retrieval_initial") or record.get("retrieval"))
+    retrieved_all = [f["path"] for f in retrieval.get("files", [])]
+    retrieved = retrieved_all[:RECALL_K]
     attempts = record.get("attempts") or []
     critiques = record.get("critiques") or []
 
@@ -119,8 +126,8 @@ def grade_case(case: Case, root: Path, base_sha: str, record: dict[str, Any], re
     patch_present = bool(changed)
 
     exp = case.expected_files
-    recall = (sum(1 for e in exp if e in retrieved) / len(exp)) if exp else None
-    ranks = {e: (retrieved.index(e) + 1 if e in retrieved else None) for e in exp}
+    recall = (sum(1 for e in exp if e in retrieved) / len(exp)) if exp and retrieval_ran else None
+    ranks = {e: (retrieved_all.index(e) + 1 if e in retrieved_all else None) for e in exp}
 
     # Edit-round application statistics (structured editing) / legacy apply results.
     rounds = applied_rounds = 0
@@ -194,7 +201,8 @@ def grade_case(case: Case, root: Path, base_sha: str, record: dict[str, Any], re
         "classification": classification,
         "classification_correct": classification_correct,
         "pipeline_result": result,
-        "retrieved_files": retrieved,
+        "retrieved_files": retrieved_all,
+        "retrieval_ran": retrieval_ran,
         "expected_files": exp,
         "retrieval_recall": recall,
         "retrieval_ranks": ranks,

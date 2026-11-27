@@ -76,3 +76,52 @@ def test_unfixed_tree_is_tests_pass_but_not_fixed_or_failed(case, tmp_path):
 
     assert g["issue_fixed"] is False and g["success"] is False
     assert g["failure_category"] in ("tests_pass_but_not_fixed", "visible_tests_failed")
+
+
+# ---------------------------------------------------------------------------
+# Manual verdicts and harness robustness
+# ---------------------------------------------------------------------------
+
+def _graded(**kw) -> dict:
+    base = {"case_id": "c", "kind": "fix", "difficulty": "easy", "classification_correct": True,
+            "patch_applied": True, "visible_tests_passed": True, "issue_fixed": True, "scope_respected": True,
+            "pipeline_result": "dry_run", "attempts": 1, "success": True, "first_attempt_success": True,
+            "tests_pass_but_not_fixed": False, "failure_category": None}
+    return base | kw
+
+
+def test_manual_correct_does_not_rescue_a_pipeline_error():
+    from fix_issue.bench.report import apply_manual
+
+    [r] = apply_manual([_graded(pipeline_result="error", success=False, failure_category="pipeline_error")],
+                       {"c": {"verdict": "correct"}})
+    assert r["success"] is False and r["failure_category"] == "pipeline_error"
+
+
+def test_manual_incorrect_rederives_dependent_fields():
+    from fix_issue.bench.report import apply_manual, compute_metrics
+
+    [r] = apply_manual([_graded()], {"c": {"verdict": "incorrect"}})
+    assert r["success"] is False and r["first_attempt_success"] is False
+    assert r["tests_pass_but_not_fixed"] is True and r["failure_category"] == "manual_verdict_incorrect"
+    assert r["issue_fixed_automated"] is True
+    m = compute_metrics([r])
+    assert m["first_attempt_success_rate"] == 0 and m["tests_pass_but_not_fixed"] == 1
+
+
+def test_manual_correct_clears_tests_pass_but_not_fixed():
+    from fix_issue.bench.report import apply_manual
+
+    [r] = apply_manual([_graded(issue_fixed=False, success=False, first_attempt_success=False,
+                                tests_pass_but_not_fixed=True, failure_category="tests_pass_but_not_fixed")],
+                       {"c": {"verdict": "correct"}})
+    assert r["success"] is True and r["failure_category"] is None and r["tests_pass_but_not_fixed"] is False
+    assert r["failure_category_automated"] == "tests_pass_but_not_fixed"
+
+
+def test_run_pytest_survives_non_ascii_output(tmp_path):
+    from fix_issue.bench.validate import run_pytest
+
+    _write(tmp_path / "test_quotes.py", 'def test_q():\n    print("\u201dquoted\u201d \u274c")\n    assert False\n')
+    ok, out = run_pytest(tmp_path, ["test_quotes.py"])
+    assert ok is False and "test_q" in out
