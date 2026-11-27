@@ -1,0 +1,526 @@
+{
+  "version": 1,
+  "description": "Hand-written calibration pairs for duplicate detection (fix_issue.duplicates.find_similar_issues). Four made-up projects; none of the text comes from the benchmark. Each pair is (new issue, recently resolved candidate) labelled 'duplicate' (same root cause) or 'distinct' (hard negative: same module, same keywords, same symptom or error type, or a feature request next to a bug). Within a project the resolved issues are distinct bugs and every new issue duplicates at most one of them, so issue x candidate combinations not listed are distinct too.",
+  "projects": {
+    "inkwell": {
+      "about": "static site generator (markdown -> HTML, front matter, sitemap, RSS)",
+      "resolved": [
+        {
+          "number": 101,
+          "title": "Front matter dates are parsed as UTC, so posts show up one day early",
+          "body": "Posts with `date: 2024-03-10` in their front matter are listed as March 9 on the index and in the\npost header for sites configured with `timezone = \"America/New_York\"`. The front matter parser built a\nnaive midnight datetime and then converted it as if it were UTC. Fixed in `inkwell/frontmatter.py` by\nlocalising the date to the site timezone before formatting."
+        },
+        {
+          "number": 102,
+          "title": "sitemap.xml includes draft pages",
+          "body": "Pages marked `draft: true` were excluded from the generated index pages but were still written to\nsitemap.xml, so search engines crawled and indexed them. `build_sitemap()` now skips drafts, same as\nthe index builder."
+        },
+        {
+          "number": 103,
+          "title": "Fenced code blocks inside list items lose their indentation",
+          "body": "A fenced code block nested in a bulleted list item is rendered with all leading whitespace removed,\nwhich breaks Python examples. The renderer dedented list-item content once for the list and once more\nfor the code fence. Fixed in `renderer.py` (dedent only once)."
+        },
+        {
+          "number": 104,
+          "title": "RSS feed item links are relative instead of absolute",
+          "body": "`<link>` entries in feed.xml are `/posts/foo/` instead of `https://example.com/posts/foo/`, so feed\nreaders cannot open them. Feed URLs are now joined with `base_url`."
+        }
+      ],
+      "issues": [
+        {
+          "number": 201,
+          "title": "Every blog post shows yesterday's date",
+          "body": "I published a post today with `date: 2024-11-02` at the top of the markdown file, but the homepage\nand the post page both say November 1, 2024. Same for all my older posts, they are all one day behind.\nMy inkwell.toml has `timezone = \"America/Los_Angeles\"`. Running inkwell 0.9.1 on macOS."
+        },
+        {
+          "number": 202,
+          "title": "Front matter date with a time raises ValueError",
+          "body": "Using `date: 2024-03-10 14:30` in front matter makes the build fail with\n`ValueError: Invalid isoformat string: '2024-03-10 14:30'`. Only plain dates (2024-03-10) work.\nExpected: a date with hours and minutes (no seconds) is accepted."
+        },
+        {
+          "number": 203,
+          "title": "Unfinished posts are showing up in Google",
+          "body": "I keep work-in-progress posts in the repo with `draft: true`. They are not on my blog, which is\ncorrect, but Google has indexed them anyway. Looking at the build output, the URLs of those drafts are\nlisted in /sitemap.xml."
+        },
+        {
+          "number": 204,
+          "title": "Feature request: exclude individual pages from the sitemap",
+          "body": "I'd like a front matter flag such as `sitemap: false` to leave published pages like /thanks/ or\n/404/ out of sitemap.xml. They should still be built and reachable, just not advertised to crawlers."
+        },
+        {
+          "number": 205,
+          "title": "Copied code examples fail with IndentationError",
+          "body": "In my docs I have a numbered list of steps, and step 2 contains a fenced python block:\n\n    1. Install\n    2. Add a hook:\n       ```python\n       def on_build(site):\n           return site\n       ```\n\nOn the rendered page the `return` line is no longer indented, so anyone who copies the snippet gets\n`IndentationError: expected an indented block after function definition on line 1`. Outside of a\nlist the same block renders fine."
+        },
+        {
+          "number": 206,
+          "title": "No syntax highlighting for toml code blocks",
+          "body": "Fenced code blocks tagged ```toml render as plain monospace text, while python, js and bash blocks\nare highlighted. Looks like the highlighter's language map has no entry for toml."
+        },
+        {
+          "number": 207,
+          "title": "feed.xml has relative URLs",
+          "body": "Feedly reports every post link in my feed as broken. feed.xml contains `<link>/posts/hello-world/</link>`\nwith no domain in front."
+        },
+        {
+          "number": 208,
+          "title": "RSS feed only contains the 10 newest posts",
+          "body": "feed.xml is capped at 10 items. Is there a setting for the limit? I'd like the whole archive to be\navailable to feed readers, or at least a configurable number like `feed_items = 50`."
+        }
+      ]
+    },
+    "harbor": {
+      "about": "HTTP client library (retries, redirects, cookies, decoding)",
+      "resolved": [
+        {
+          "number": 301,
+          "title": "Retries are not applied to connection timeouts",
+          "body": "`Client(retries=3)` retries 502/503 responses, but a `ConnectTimeout` is raised immediately on the\nfirst attempt. The retry loop in `harbor/retry.py` only caught `HTTPStatusError`. It now also retries\n`ConnectTimeout` and `ConnectError` (the request was never sent, so this is safe for every method)."
+        },
+        {
+          "number": 302,
+          "title": "Authorization header is forwarded on cross-domain redirects",
+          "body": "When a request to api.example.com is redirected to a different host, the `Authorization` header was\ncopied onto the redirected request. The header is now stripped whenever a redirect changes the host or\ndowngrades the scheme."
+        },
+        {
+          "number": 303,
+          "title": "Cookies set with a Path attribute are sent to every path",
+          "body": "A cookie set with `Set-Cookie: session=abc; Path=/admin` was attached to requests for `/public` as\nwell. The cookie jar ignored the path attribute when selecting cookies for a request. Path matching per\nRFC 6265 section 5.1.4 is now applied."
+        },
+        {
+          "number": 304,
+          "title": "Response.json() fails when the body starts with a UTF-8 BOM",
+          "body": "Some APIs prefix their JSON with a byte order mark, and `Response.json()` raised\n`JSONDecodeError: Unexpected UTF-8 BOM`. JSON bodies are now decoded with `utf-8-sig`."
+        }
+      ],
+      "issues": [
+        {
+          "number": 401,
+          "title": "ConnectTimeout raised even though retries=5",
+          "body": "Our VPN drops the first connection attempt pretty often, so I configured `Client(retries=5)` and\nexpected it to try again. It gives up on the very first timeout:\n\n```\nTraceback (most recent call last):\n  File \"sync.py\", line 41, in <module>\n    resp = client.get(url)\n  File \".../harbor/client.py\", line 212, in get\n    return self._send(req)\n  File \".../harbor/retry.py\", line 58, in send_with_retries\n    return transport.send(request)\nharbor.exceptions.ConnectTimeout: timed out after 5.0s connecting to 10.0.3.7:443\n```\n\nharbor 2.3.0, Python 3.12."
+        },
+        {
+          "number": 402,
+          "title": "POST requests are re-sent after a read timeout",
+          "body": "With `retries=3`, a POST that times out while waiting for the response body is sent again. Our\npayment provider then received the same order twice. Requests that may already have reached the server\n(read timeouts) should not be retried for non-idempotent methods like POST and PATCH."
+        },
+        {
+          "number": 403,
+          "title": "Bearer token sent to a third-party host after a 302",
+          "body": "Our API answers download requests with a 302 to an S3 presigned URL. S3 then fails with\n`400 InvalidArgument: Only one auth mechanism allowed` because harbor sends our\n`Authorization: Bearer ...` header along to the S3 host. Downloading the presigned URL directly works."
+        },
+        {
+          "number": 404,
+          "title": "307 redirect is not followed for POST",
+          "body": "A POST answered with `307 Temporary Redirect` is returned to the caller as-is instead of being re-sent\nto the Location with the same method and body. 301 and 302 are followed. `follow_redirects=True` is set."
+        },
+        {
+          "number": 405,
+          "title": "JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig)",
+          "body": "Calling `.json()` on responses from our ERP's REST endpoint fails with\n\n    json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)\n\n`json.loads(resp.content.decode(\"utf-8-sig\"))` works, so the payload itself is valid."
+        },
+        {
+          "number": 406,
+          "title": "Response.text falls back to ISO-8859-1 for JSON without a charset",
+          "body": "For `Content-Type: application/json` without a `charset` parameter, `resp.text` is decoded as\nlatin-1, so `ü` comes out as `Ã¼`. JSON is UTF-8 by definition (RFC 8259), so that should be the\ndefault for JSON responses."
+        },
+        {
+          "number": 407,
+          "title": "Feature request: persist cookies to disk",
+          "body": "It would be useful to have `CookieJar.save(path)` and `CookieJar.load(path)` so that a logged-in\nsession survives a restart of our CLI tool instead of having to log in every time."
+        },
+        {
+          "number": 409,
+          "title": "Retries are not applied to 429 responses",
+          "body": "When the server answers `429 Too Many Requests` with a `Retry-After` header, harbor returns the\nresponse straight away even with `retries=3`. Status-based retries only cover 502, 503 and 504.\n429 should be retried after waiting for the Retry-After delay."
+        },
+        {
+          "number": 408,
+          "title": "Admin session cookie leaks to public pages",
+          "body": "After logging into /admin, our session cookie (it is set with `Path=/admin`) is also attached to every\nrequest harbor makes for /static/... and /api/public/..., which we can see in our CDN logs. It should\nonly be sent to /admin URLs."
+        }
+      ]
+    },
+    "pixelpress": {
+      "about": "image thumbnail service",
+      "resolved": [
+        {
+          "number": 501,
+          "title": "Thumbnails of portrait phone photos are rotated 90 degrees",
+          "body": "JPEGs taken on phones store their orientation in the EXIF Orientation tag (usually 6 or 8).\n`make_thumbnail()` ignored the tag, so portrait photos came out sideways. Fixed by applying\n`ImageOps.exif_transpose()` before resizing."
+        },
+        {
+          "number": 502,
+          "title": "Transparent PNGs get a black background in JPEG thumbnails",
+          "body": "Converting RGBA PNGs to JPEG thumbnails filled the transparent pixels with black. The image is now\ncomposited onto a white background first (configurable with `background=`)."
+        },
+        {
+          "number": 503,
+          "title": "Worker memory grows without bound on large batches",
+          "body": "The worker kept every opened `Image` in a module-level cache dict that was never evicted, so\nprocessing 10k images used about 6 GB of RAM. The cache is now an LRU bounded to 64 entries and images\nare closed after the thumbnail is written."
+        }
+      ],
+      "issues": [
+        {
+          "number": 601,
+          "title": "Uploaded profile pictures appear sideways",
+          "body": "When users upload a selfie from an iPhone, the avatar preview is turned on its side. The original file\nlooks fine in the photo viewer and on the phone. Pictures uploaded from desktop computers are fine."
+        },
+        {
+          "number": 602,
+          "title": "Thumbnails are stretched instead of keeping the aspect ratio",
+          "body": "`make_thumbnail(img, (200, 200))` on a 1600x900 photo returns a 200x200 image and the picture is\nsquashed. Expected 200x113, i.e. fit inside the box and keep the proportions."
+        },
+        {
+          "number": 603,
+          "title": "Logo thumbnails have black boxes around them",
+          "body": "Our partner logos are PNG files with a transparent background. In the generated .jpg thumbnails the\ntransparent area is solid black, which looks terrible on our white product pages."
+        },
+        {
+          "number": 604,
+          "title": "Feature request: WebP thumbnails with transparency",
+          "body": "Please support `format=\"webp\"` for thumbnails. WebP supports an alpha channel, so logos and cut-out\nproduct shots could keep their transparency instead of being flattened into a JPEG."
+        },
+        {
+          "number": 605,
+          "title": "pixelpress worker gets OOM-killed during the nightly batch",
+          "body": "Our nightly job that creates thumbnails for ~20,000 product images is killed by the kernel OOM killer\nafter about an hour. Watching the process, RSS climbs steadily with every image and never goes down.\nRestarting the worker every 2,000 images works around it."
+        },
+        {
+          "number": 606,
+          "title": "Huge TIFF scans make the worker run out of memory",
+          "body": "A single 30000x20000 px TIFF (a scanned map) makes the worker allocate more than 8 GB and crash\nimmediately. Very large images should be decoded at reduced size (draft/reduce) or rejected above a\nconfigurable pixel limit."
+        }
+      ]
+    },
+    "notebox": {
+      "about": "note-taking app with offline sync (JavaScript)",
+      "resolved": [
+        {
+          "number": 701,
+          "title": "Sync conflict silently overwrites the newer version of a note",
+          "body": "When the same note was edited on two devices while offline, whichever device synced last won, even if\nits edit was older. The merge step now compares `updatedAt` and, when both sides changed, keeps both\nversions and creates a \"conflicted copy\" note."
+        },
+        {
+          "number": 702,
+          "title": "Search does not match accented words",
+          "body": "Searching for `cafe` did not find notes containing `café`, and the other way round. The search index\nnow stores NFKD-normalised tokens with diacritics removed, and queries are normalised the same way."
+        },
+        {
+          "number": 703,
+          "title": "Crash when opening a note whose attachment upload failed",
+          "body": "`TypeError: Cannot read properties of undefined (reading 'mimeType')` in `AttachmentView.render` when\na failed upload left an attachment record without a file. Such records are now rendered as a \"missing\nattachment\" placeholder."
+        }
+      ],
+      "issues": [
+        {
+          "number": 801,
+          "title": "Lost an hour of edits after my laptop came back online",
+          "body": "I edited a meeting note on my laptop on the train with no internet. My phone still had the old version\nof that note open. When the laptop reconnected, my changes vanished and the note showed the phone's\nolder text. Nothing in the trash either."
+        },
+        {
+          "number": 802,
+          "title": "Sync stuck at \"Uploading 1 of 3\" forever",
+          "body": "The sync spinner never finishes when one of the changed notes has a 40 MB video attachment. The other\ntwo notes are never uploaded either. Removing the attachment lets sync complete."
+        },
+        {
+          "number": 803,
+          "title": "Searching 'resume' doesn't find 'résumé'",
+          "body": "I have a note titled \"Résumé tips\". Typing resume in the search box returns nothing; typing résumé\n(with the accents) finds it. On my phone keyboard typing accents is a pain."
+        },
+        {
+          "number": 807,
+          "title": "Search doesn't match words with accents",
+          "body": "My note \"Naïve Bayes notes\" can't be found by searching naive. It only shows up when I type the ï.\nVersion 3.2 on Android."
+        },
+        {
+          "number": 804,
+          "title": "Tag search is case-sensitive",
+          "body": "Searching for `#Work` finds my tagged notes but `#work` finds none. Tags should match regardless of\nupper/lower case."
+        },
+        {
+          "number": 805,
+          "title": "Blank screen with TypeError reading 'mimeType'",
+          "body": "Opening one particular note shows a blank screen. The console says:\n\n    TypeError: Cannot read properties of undefined (reading 'mimeType')\n        at AttachmentView.render (attachment-view.js:88:31)\n        at renderNote (note.js:144:12)\n\nThat note had an image whose upload failed yesterday when my connection dropped."
+        },
+        {
+          "number": 806,
+          "title": "TypeError reading 'title' after deleting a notebook",
+          "body": "Deleting a notebook that still contains notes shows\n\n    TypeError: Cannot read properties of undefined (reading 'title')\n        at NotebookList.render (notebook-list.js:51:20)\n\nThe sidebar still holds a reference to the deleted notebook. Reloading the app fixes it."
+        }
+      ]
+    }
+  },
+  "pairs": [
+    {
+      "id": "inkwell-201-101",
+      "project": "inkwell",
+      "issue": 201,
+      "candidate": 101,
+      "label": "duplicate",
+      "kind": "different_reporter",
+      "note": "user symptom (date one day behind) vs developer root cause (UTC conversion)"
+    },
+    {
+      "id": "inkwell-202-101",
+      "project": "inkwell",
+      "issue": 202,
+      "candidate": 101,
+      "label": "distinct",
+      "kind": "same_module",
+      "note": "same front matter date parser, different bug (time format rejected)"
+    },
+    {
+      "id": "inkwell-203-102",
+      "project": "inkwell",
+      "issue": 203,
+      "candidate": 102,
+      "label": "duplicate",
+      "kind": "different_reporter",
+      "note": "drafts indexed by Google vs drafts written to sitemap"
+    },
+    {
+      "id": "inkwell-204-102",
+      "project": "inkwell",
+      "issue": 204,
+      "candidate": 102,
+      "label": "distinct",
+      "kind": "feature_vs_bug",
+      "note": "sitemap opt-out feature request vs drafts-in-sitemap bug"
+    },
+    {
+      "id": "inkwell-205-103",
+      "project": "inkwell",
+      "issue": 205,
+      "candidate": 103,
+      "label": "duplicate",
+      "kind": "error_message",
+      "note": "IndentationError on copied snippet vs dedent in list items"
+    },
+    {
+      "id": "inkwell-206-103",
+      "project": "inkwell",
+      "issue": 206,
+      "candidate": 103,
+      "label": "distinct",
+      "kind": "same_keywords",
+      "note": "code block highlighting vs code block indentation"
+    },
+    {
+      "id": "inkwell-207-104",
+      "project": "inkwell",
+      "issue": 207,
+      "candidate": 104,
+      "label": "duplicate",
+      "kind": "terse",
+      "note": "short report of the same relative feed links"
+    },
+    {
+      "id": "inkwell-208-104",
+      "project": "inkwell",
+      "issue": 208,
+      "candidate": 104,
+      "label": "distinct",
+      "kind": "feature_vs_bug",
+      "note": "feed item limit request vs relative feed links"
+    },
+    {
+      "id": "harbor-401-301",
+      "project": "harbor",
+      "issue": 401,
+      "candidate": 301,
+      "label": "duplicate",
+      "kind": "stack_trace",
+      "note": "traceback of ConnectTimeout despite retries"
+    },
+    {
+      "id": "harbor-402-301",
+      "project": "harbor",
+      "issue": 402,
+      "candidate": 301,
+      "label": "distinct",
+      "kind": "same_keywords",
+      "note": "retries + timeout, but the opposite problem (unsafe retry of POST)"
+    },
+    {
+      "id": "harbor-403-302",
+      "project": "harbor",
+      "issue": 403,
+      "candidate": 302,
+      "label": "duplicate",
+      "kind": "different_reporter",
+      "note": "S3 rejects request vs Authorization forwarded on redirect"
+    },
+    {
+      "id": "harbor-404-302",
+      "project": "harbor",
+      "issue": 404,
+      "candidate": 302,
+      "label": "distinct",
+      "kind": "same_module",
+      "note": "redirect handling, different bug (307 not followed)"
+    },
+    {
+      "id": "harbor-405-304",
+      "project": "harbor",
+      "issue": 405,
+      "candidate": 304,
+      "label": "duplicate",
+      "kind": "error_message",
+      "note": "pasted JSONDecodeError for a BOM"
+    },
+    {
+      "id": "harbor-406-304",
+      "project": "harbor",
+      "issue": 406,
+      "candidate": 304,
+      "label": "distinct",
+      "kind": "same_module",
+      "note": "response decoding, different bug (charset default)"
+    },
+    {
+      "id": "harbor-407-303",
+      "project": "harbor",
+      "issue": 407,
+      "candidate": 303,
+      "label": "distinct",
+      "kind": "feature_vs_bug",
+      "note": "cookie persistence feature vs cookie path matching bug"
+    },
+    {
+      "id": "harbor-408-303",
+      "project": "harbor",
+      "issue": 408,
+      "candidate": 303,
+      "label": "duplicate",
+      "kind": "paraphrase",
+      "note": "path-scoped cookie sent to other paths"
+    },
+    {
+      "id": "harbor-409-301",
+      "project": "harbor",
+      "issue": 409,
+      "candidate": 301,
+      "label": "distinct",
+      "kind": "same_title",
+      "note": "near-identical title, different bug (429 not in the retryable statuses)"
+    },
+    {
+      "id": "pixelpress-601-501",
+      "project": "pixelpress",
+      "issue": 601,
+      "candidate": 501,
+      "label": "duplicate",
+      "kind": "different_reporter",
+      "note": "avatar sideways (no EXIF wording) vs EXIF orientation ignored"
+    },
+    {
+      "id": "pixelpress-602-501",
+      "project": "pixelpress",
+      "issue": 602,
+      "candidate": 501,
+      "label": "distinct",
+      "kind": "same_module",
+      "note": "make_thumbnail geometry, different bug (aspect ratio)"
+    },
+    {
+      "id": "pixelpress-603-502",
+      "project": "pixelpress",
+      "issue": 603,
+      "candidate": 502,
+      "label": "duplicate",
+      "kind": "paraphrase",
+      "note": "transparent PNG becomes black"
+    },
+    {
+      "id": "pixelpress-604-502",
+      "project": "pixelpress",
+      "issue": 604,
+      "candidate": 502,
+      "label": "distinct",
+      "kind": "feature_vs_bug",
+      "note": "WebP/alpha feature request vs black background bug"
+    },
+    {
+      "id": "pixelpress-605-503",
+      "project": "pixelpress",
+      "issue": 605,
+      "candidate": 503,
+      "label": "duplicate",
+      "kind": "different_reporter",
+      "note": "OOM kill / RSS growth vs unbounded image cache"
+    },
+    {
+      "id": "pixelpress-606-503",
+      "project": "pixelpress",
+      "issue": 606,
+      "candidate": 503,
+      "label": "distinct",
+      "kind": "same_symptom",
+      "note": "out of memory too, but one huge image, not a leak"
+    },
+    {
+      "id": "notebox-801-701",
+      "project": "notebox",
+      "issue": 801,
+      "candidate": 701,
+      "label": "duplicate",
+      "kind": "different_reporter",
+      "note": "lost offline edits vs last-sync-wins conflict handling"
+    },
+    {
+      "id": "notebox-802-701",
+      "project": "notebox",
+      "issue": 802,
+      "candidate": 701,
+      "label": "distinct",
+      "kind": "same_module",
+      "note": "sync, different bug (large attachment blocks upload)"
+    },
+    {
+      "id": "notebox-803-702",
+      "project": "notebox",
+      "issue": 803,
+      "candidate": 702,
+      "label": "duplicate",
+      "kind": "paraphrase",
+      "note": "accent-insensitive search"
+    },
+    {
+      "id": "notebox-804-702",
+      "project": "notebox",
+      "issue": 804,
+      "candidate": 702,
+      "label": "distinct",
+      "kind": "same_keywords",
+      "note": "search normalisation, different dimension (case of tags)"
+    },
+    {
+      "id": "notebox-807-702",
+      "project": "notebox",
+      "issue": 807,
+      "candidate": 702,
+      "label": "duplicate",
+      "kind": "same_title",
+      "note": "reporter reuses most of the resolved title"
+    },
+    {
+      "id": "notebox-805-703",
+      "project": "notebox",
+      "issue": 805,
+      "candidate": 703,
+      "label": "duplicate",
+      "kind": "stack_trace",
+      "note": "same TypeError and trigger"
+    },
+    {
+      "id": "notebox-806-703",
+      "project": "notebox",
+      "issue": 806,
+      "candidate": 703,
+      "label": "distinct",
+      "kind": "same_error_type",
+      "note": "same TypeError shape in a different component and cause"
+    }
+  ]
+}

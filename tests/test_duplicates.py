@@ -114,8 +114,10 @@ def test_body_excerpt_and_to_dict():
     assert len(r.body_excerpt) <= 300
     assert "\n" not in r.body_excerpt
     d = r.to_dict()
-    assert set(d) == {"number", "title", "similarity", "state", "source", "resolved_by", "body_excerpt"}
+    assert set(d) == {"number", "title", "similarity", "state", "source", "resolved_by", "body_excerpt",
+                      "scorer"}
     assert d["source"] == "provided"  # default when the candidate does not say
+    assert d["scorer"] == "local-ngram-768"  # no embedder given -> pool-fitted local scorer
 
 
 class _FakeSemantic:

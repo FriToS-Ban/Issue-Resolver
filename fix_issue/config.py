@@ -63,6 +63,21 @@ class CriticConfig:
     model: str = ""
 
 
+# Similarity a listed resolved issue needs before a "duplicate" verdict is accepted, per scorer
+# (the embedding backend that produced the similarity — the scales differ a lot). Calibrated on
+# tests/data/duplicate_pairs.json (hand-written pairs, not the benchmark) with a precision-first
+# rule: the largest recall with zero false positives, placed at the midpoint of the gap between
+# the highest-scoring non-duplicate and the next duplicate (``duplicates.precision_first_threshold``).
+#   local    offline n-gram scorer; gap taken across candidate-pool sizes (its IDF is pool-fitted)
+#   <model>  a calibrated API embedding model (name with or without the "api:" prefix)
+#   default  any other scorer — uncalibrated models keep the old conservative 0.82
+DUPLICATE_THRESHOLDS: dict[str, float] = {
+    "local": 0.41,
+    "nvidia/nemotron-3.5-embed-1b": 0.53,
+    "default": 0.82,
+}
+
+
 @dataclass
 class PipelineConfig:
     profile: str = "full"               # full | baseline (legacy keyword/diff pipeline)
@@ -71,7 +86,9 @@ class PipelineConfig:
     max_critique_rounds: int = 1        # NEEDS_REVISION -> revise loops allowed
     max_plan_revisions: int = 1
     max_context_chars: int = 60_000     # source context budget per patch prompt
-    duplicate_threshold: float = 0.82   # semantic similarity needed to accept "duplicate"
+    # Similarity needed to accept "duplicate": a number applies to every scorer (the old
+    # behaviour); a table maps scorer -> threshold and is merged over DUPLICATE_THRESHOLDS.
+    duplicate_threshold: float | dict[str, float] = field(default_factory=lambda: dict(DUPLICATE_THRESHOLDS))
 
 
 @dataclass
@@ -204,7 +221,36 @@ def _overlay(target: object, raw: dict) -> None:
             value = float(value)
         elif isinstance(current, list):
             value = list(value)
+        elif isinstance(current, dict) and isinstance(value, dict):
+            value = {**current, **value}    # a partial table overrides only the keys it names
         setattr(target, key, value)
+
+
+def duplicate_threshold_for(setting: object, scorer: str | None) -> float:
+    """
+    Threshold for a similarity produced by ``scorer`` (``SimilarIssue.scorer``, e.g.
+    "local-ngram-768" or "api:nvidia/nemotron-3.5-embed-1b").
+
+    ``setting`` is ``[pipeline] duplicate_threshold``: a number applies to every scorer; a
+    mapping is looked up by exact scorer name, then the model name without "api:", then
+    "local" for local scorers, then "default" — each falling back to DUPLICATE_THRESHOLDS.
+    An unknown or missing scorer gets "default" (conservative).
+    """
+    if isinstance(setting, (int, float)) and not isinstance(setting, bool):
+        return float(setting)
+    table = {**DUPLICATE_THRESHOLDS, **(setting if isinstance(setting, dict) else {})}
+    name = (scorer or "").strip()
+    keys = [name, name.removeprefix("api:")] if name else []
+    if name.startswith("local"):
+        keys.append("local")
+    keys.append("default")
+    for k in keys:
+        if k in table:
+            try:
+                return float(table[k])
+            except (TypeError, ValueError):
+                continue
+    return DUPLICATE_THRESHOLDS["default"]
 
 
 def fix_issue_home() -> Path:
@@ -226,6 +272,13 @@ def validate(cfg: Config) -> list[str]:
             "[retrieval] embedding_backend must be local | openai_compatible | none, "
             f"got '{cfg.retrieval.embedding_backend}'"
         )
+    dt = cfg.pipeline.duplicate_threshold
+    dt_items = dt.items() if isinstance(dt, dict) else [("", dt)]
+    for k, v in dt_items:
+        ok = isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= float(v) <= 1.0
+        if not ok:
+            where = f"[pipeline.duplicate_threshold] {k}" if k else "[pipeline] duplicate_threshold"
+            errors.append(f"{where} must be a number between 0 and 1, got {v!r}")
     if cfg.llm.provider == "openai_compatible" and not cfg.llm.base_url:
         errors.append(
             "LLM_PROVIDER=openai_compatible requires LLM_BASE_URL "

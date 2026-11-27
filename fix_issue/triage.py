@@ -21,7 +21,8 @@ Two layers:
 
   apply_duplicate_evidence()
                       a "duplicate" verdict is only kept when a listed similar issue clears
-                      the configured similarity threshold; otherwise it is downgraded.
+                      the configured similarity threshold for the scorer that produced its
+                      similarity; otherwise it is downgraded.
 """
 
 from __future__ import annotations
@@ -30,10 +31,11 @@ import fnmatch
 import json
 import math
 import re
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from fix_issue.config import LimitsConfig, PipelineConfig
+from fix_issue.config import LimitsConfig, PipelineConfig, duplicate_threshold_for
 from fix_issue.llm_provider import LLMProvider
 from fix_issue.structured import Field, StructuredOutputError, extract_json, validate
 
@@ -386,11 +388,15 @@ def derive_controls(
 def apply_duplicate_evidence(
     triage: TriageResult,
     similar_issues: list[Any] | None,
-    threshold: float,
+    threshold: float | Mapping[str, float],
 ) -> TriageResult:
     """
     Keep a "duplicate" verdict only when it is backed by a listed similar issue whose
-    similarity >= ``threshold``. Returns a new TriageResult (input is not mutated).
+    similarity >= its threshold. Returns a new TriageResult (input is not mutated).
+
+    ``threshold`` is ``[pipeline] duplicate_threshold``: a number applies to every issue; a
+    mapping picks each issue's threshold from the scorer that produced its similarity
+    (``scorer`` key, see ``config.duplicate_threshold_for``).
 
       - duplicate_of given and among the qualifying issues     -> kept
       - duplicate_of missing, some issue qualifies             -> kept, duplicate_of = best match
@@ -403,6 +409,7 @@ def apply_duplicate_evidence(
         return triage
 
     sims: dict[int, float] = {}
+    limits: dict[int, float] = {}
     for s in similar_issues or []:
         d = s.to_dict() if hasattr(s, "to_dict") else (s if isinstance(s, dict) else {})
         num = _as_int(d.get("number"))
@@ -412,8 +419,10 @@ def apply_duplicate_evidence(
             sim = float(d.get("similarity") or 0.0)
         except (TypeError, ValueError):
             sim = 0.0
-        sims[num] = max(sim, sims.get(num, 0.0))
-    qualifying = {n: s for n, s in sims.items() if s >= threshold}
+        limit = duplicate_threshold_for(threshold, d.get("scorer"))
+        if num not in sims or sim - limit > sims[num] - limits[num]:
+            sims[num], limits[num] = sim, limit
+    qualifying = {n: s for n, s in sims.items() if s >= limits[n]}
 
     warnings = list(triage.warnings)
     if triage.duplicate_of is not None and triage.duplicate_of in qualifying:
@@ -428,11 +437,13 @@ def apply_duplicate_evidence(
     if triage.duplicate_of is not None:
         if triage.duplicate_of in sims:
             why = (f"#{triage.duplicate_of} similarity {sims[triage.duplicate_of]:.2f} "
-                   f"is below threshold {threshold:.2f}")
+                   f"is below threshold {limits[triage.duplicate_of]:.2f}")
         else:
             why = f"#{triage.duplicate_of} is not among the listed similar issues"
     elif sims:
-        why = f"no listed similar issue reaches similarity {threshold:.2f}"
+        lows = sorted(set(limits.values()))
+        shown = f"{lows[0]:.2f}" if len(lows) == 1 else "its threshold (" + "/".join(f"{x:.2f}" for x in lows) + ")"
+        why = f"no listed similar issue reaches similarity {shown}"
     else:
         why = "no similar resolved issues were found"
     new_cls = "needs_info" if triage.reproduction == "missing" else "fixable"
