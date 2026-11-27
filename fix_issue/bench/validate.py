@@ -13,7 +13,6 @@ Triage cases only need to materialise cleanly.  Nothing here calls an LLM.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -27,7 +26,7 @@ from fix_issue.bench.cases import (
     inject_bug,
     install_hidden_tests,
 )
-from fix_issue.sandbox import safe_env
+from fix_issue.sandbox import run_process, safe_env
 
 
 @dataclass
@@ -44,15 +43,15 @@ def run_pytest(root: Path, targets: list[str] | None = None, timeout: int = 180)
     else:
         cmd += ["--ignore", HIDDEN_TEST_DIR]
     try:
-        # Decode as UTF-8 explicitly: the Windows default (cp1252) raises on bytes like 0x9D in
-        # pytest output, which turned a graded failure into a harness error.
-        proc = subprocess.run(
-            cmd, cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=timeout, env=safe_env(),
-        )
-    except subprocess.TimeoutExpired:
+        # Same runner as the pipeline: allowlisted env, wall-clock timeout, process-tree kill,
+        # output captured via temp files and decoded leniently (cp1252 decoding of pytest output
+        # once turned a graded failure into a harness error).
+        res = run_process(cmd, root, timeout=timeout, env=safe_env())
+    except OSError as exc:
+        return False, f"could not run pytest: {exc}"
+    if res.timed_out:
         return False, f"timeout after {timeout}s"
-    return proc.returncode == 0, ((proc.stdout or "") + (proc.stderr or ""))[-3000:]
+    return res.returncode == 0, ((res.stdout or "") + (res.stderr or ""))[-3000:]
 
 
 def validate_case(case: Case) -> ValidationReport:

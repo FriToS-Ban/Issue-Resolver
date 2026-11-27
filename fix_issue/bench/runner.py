@@ -23,7 +23,6 @@ import concurrent.futures as cf
 import fnmatch
 import json
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -38,7 +37,8 @@ from fix_issue.bench.validate import run_pytest
 from fix_issue.config import Config
 from fix_issue.llm_provider import LLMProvider
 from fix_issue.orchestrator import Orchestrator, Reporter
-from fix_issue.repo_manager import LocalWorkspace
+from fix_issue.repo_manager import LocalWorkspace, _rmtree, git_command, git_env
+from fix_issue.sandbox import run_process
 from fix_issue.run_history import RunRecorder
 
 LLMFactory = Callable[[], tuple[LLMProvider, LLMProvider | None]]
@@ -72,13 +72,15 @@ class BenchIssueSource:
 
 
 def _git(root: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True,
-                          encoding="utf-8", errors="replace").stdout
+    """Grading runs git AFTER repository code ran in ``root``: use the hardened invocation
+    (no hooks, no fsmonitor, allowlisted env, timeout), never a bare ``git``."""
+    res = run_process(git_command(root, *args), root, timeout=120, env=git_env())
+    return res.stdout
 
 
 def _changed_files(root: Path, base: str) -> list[str]:
     _git(root, "add", "--intent-to-add", ".")
-    names = _git(root, "diff", "--name-only", base).splitlines()
+    names = _git(root, "diff", "--no-ext-diff", "--no-textconv", "--name-only", base).splitlines()
     return sorted(n.strip() for n in names if n.strip() and "__pycache__" not in n)
 
 
@@ -90,7 +92,7 @@ def _is_test_path(p: str) -> bool:
 def _changed_lines_by_file(root: Path, base: str) -> dict[str, int]:
     """Added + removed lines per file (``git diff --numstat``; new files count as added)."""
     out: dict[str, int] = {}
-    for row in _git(root, "diff", "--numstat", "--no-color", base).splitlines():
+    for row in _git(root, "diff", "--no-ext-diff", "--no-textconv", "--numstat", "--no-color", base).splitlines():
         parts = row.split(chr(9))
         if len(parts) != 3 or "__pycache__" in parts[2]:
             continue
@@ -270,7 +272,10 @@ def run_case(case: Case, cfg: Config, llm_factory: LLMFactory, runs_dir: Path, *
         }
     finally:
         if not keep_workspace:
-            shutil.rmtree(tmp, ignore_errors=True)
+            try:
+                _rmtree(tmp)          # handles git's read-only object files on Windows
+            except OSError:
+                pass
 
 
 def run_benchmark(cases: list[Case], cfg: Config, llm_factory: LLMFactory, out_path: Path, *,
