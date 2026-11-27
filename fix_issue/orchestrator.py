@@ -28,7 +28,7 @@ original keyword-retrieval + unified-diff pipeline for honest before/after compa
 from __future__ import annotations
 
 import fnmatch
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Protocol
 
@@ -408,7 +408,8 @@ class Orchestrator:
                     ui.step("Revising plan", failure.plan_contradiction[:120])
                     try:
                         with tagged(self.llm, "plan_revision"):
-                            new_plan, _ = revise_plan(self.llm, issue, plan, failure.feedback(),
+                            new_plan, _ = revise_plan(self.llm, issue, plan,
+                                                      f"{failure.plan_contradiction}\n\n{failure.feedback()}",
                                                       retriever.render_context(retrieval, budget,
                                                                                extra_paths=failure.files),
                                                       repo_files)
@@ -417,7 +418,13 @@ class Orchestrator:
                         ws.reset_hard()
                         decompose = controls.decompose and plan.is_multi_step()
                         pending = list(plan.ordered_steps()) if decompose else [None]
-                        feedback = f"(Plan revised to version {plan.version}; the working tree was reset.)\n" + feedback
+                        # The reset discarded every edit: drop the failure's now-stale view of the tree
+                        # (modified files, pre-reset excerpts, "your previous edits ARE applied").
+                        after_reset = replace(failure, partial_changes=[], current_excerpts={}, retry_reason=(
+                            "The working tree was reset to the base commit, so none of the earlier edits are "
+                            "applied. Implement the revised plan against the CURRENT files."))
+                        feedback = (f"(Plan revised to version {plan.version}; the working tree was reset.)\n"
+                                    + after_reset.feedback())
                     except Exception as exc:
                         rec.event("plan_revision", f"failed: {exc}")
                 continue
@@ -441,11 +448,15 @@ class Orchestrator:
                         scope_report={**scope_now.to_dict(), "summary": _scope_summary(scope_now)},
                         strict=controls.critique_strictness == "strict" or controls.require_human_review,
                     )
+                if crit.verdict == "NEEDS_REVISION" and critique_rounds <= 0:
+                    # Escalate BEFORE recording, so the run record shows the verdict acted on.
+                    crit.verdict = "HUMAN_REVIEW"
+                    crit.gates.append("revision budget exhausted → HUMAN_REVIEW")
                 rec.append("critiques", crit.to_dict() | {"attempt": attempt})
                 ui.info(f"verdict {crit.verdict} (reviewer said {crit.llm_verdict}); {crit.summary[:160]}")
                 for g in crit.gates:
                     ui.info(f"gate: {g}")
-                if crit.verdict == "NEEDS_REVISION" and critique_rounds > 0:
+                if crit.verdict == "NEEDS_REVISION":
                     critique_rounds -= 1
                     attempt_budget += 1   # a review round is its own bounded budget
                     failure = analyze_critique(crit, ws)
@@ -453,9 +464,6 @@ class Orchestrator:
                     feedback = failure.feedback()
                     last_failure = failure
                     continue
-                if crit.verdict == "NEEDS_REVISION":
-                    crit.verdict = "HUMAN_REVIEW"
-                    crit.gates.append("revision budget exhausted → HUMAN_REVIEW")
                 if crit.verdict == "REJECTED":
                     rec.append("attempts", att | {"result": "rejected"})
                     ws.reset_hard()

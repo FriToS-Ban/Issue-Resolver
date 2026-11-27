@@ -164,6 +164,32 @@ def test_critique_parses_and_gates():
     assert "INTENT" not in prompt
 
 
+# --- recovery -----------------------------------------------------------------------------
+
+@pytest.mark.parametrize("output", [
+    # pytest --tb=short (the orchestrator's test command), Windows and POSIX separators
+    "tests\\test_mod.py:3: in test_f\n    f()\npkg\\mod.py:2: in f\n    raise ValueError\nE   ValueError\n",
+    "tests/test_mod.py:3: in test_f\n    f()\npkg/mod.py:2: in f\n    raise ValueError\nE   ValueError\n",
+    # pytest --tb=long location lines
+    ">       f()\n\ntests/test_mod.py:3: \n_ _ _\n>   raise ValueError\nE   ValueError\n\npkg/mod.py:2: ValueError\n",
+])
+def test_test_failure_analysis_reads_pytest_traceback_frames(tmp_path, output):
+    from types import SimpleNamespace
+
+    from fix_issue.recovery import analyze_test_failure
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "mod.py").write_text("def f():\n    raise ValueError\n", encoding="utf-8")
+    ws = SimpleNamespace(root=tmp_path, changed_files=lambda: ["pkg/mod.py"])
+    result = SimpleNamespace(failed_tests=["tests/test_mod.py::test_f"], output=output, summary="1 failed")
+    fa = analyze_test_failure(ws, result, set(), ["pkg/other.py"], ["pkg/mod.py", "pkg/other.py", "tests/test_mod.py"])
+    assert fa.files == ["pkg/mod.py"]                      # test frames are not source frames
+    assert "raise ValueError" in fa.current_excerpts["pkg/mod.py"]
+    assert "pkg/mod.py" in fa.plan_contradiction           # outside the plan -> revise the plan
+    fa = analyze_test_failure(ws, result, set(), ["pkg/mod.py"], ["pkg/mod.py", "pkg/other.py", "tests/test_mod.py"])
+    assert fa.plan_contradiction is None
+
+
 # --- run history --------------------------------------------------------------------------
 
 def test_run_recorder_roundtrip(tmp_path, monkeypatch):

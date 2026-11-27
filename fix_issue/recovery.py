@@ -17,11 +17,12 @@ the model is asked for a corrected edit against the current state.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fix_issue.retrieval.mentions import extract_mentions
+from fix_issue.retrieval.mentions import Frame, extract_mentions, resolve_path
 
 FAILURE_CATEGORIES = (
     "llm_error",            # provider/transport failure
@@ -113,6 +114,22 @@ def _partial(workspace) -> list[str]:
         return []
 
 
+# pytest's own traceback location lines, which extract_mentions (native "File ..., line N"
+# frames) does not parse: "pkg/mod.py:42: in func" (--tb=short, the orchestrator's test
+# command) or "pkg/mod.py:42: ValueError" (--tb=long); backslashes on Windows.
+_PYTEST_FRAME = re.compile(r"^((?:[A-Za-z]:)?[^\s:]+\.py):(\d+):(?: in ([\w<>.]+))?", re.MULTILINE)
+
+
+def _output_frames(output: str, repo_files: list[str]) -> list[Frame]:
+    """Project stack frames in test output, outermost first (native frames + pytest location lines)."""
+    found = [(output.find(f.raw), f) for f in extract_mentions(output, repo_files).frames]
+    for m in _PYTEST_FRAME.finditer(output):
+        path = resolve_path(m.group(1), repo_files)
+        if path:
+            found.append((m.start(), Frame(path, int(m.group(2)), m.group(3), m.group(0))))
+    return [f for _, f in sorted(found, key=lambda pf: pf[0])]
+
+
 # ---------------------------------------------------------------------------
 # Analysers
 # ---------------------------------------------------------------------------
@@ -195,8 +212,7 @@ def analyze_test_failure(workspace, test_result, baseline_failed: set[str], plan
     new_failures = sorted(failed_now - baseline_failed)
     category = "regression" if new_failures else "tests_failed"
     out = test_result.output or ""
-    mentions = extract_mentions(out[-6000:], repo_files)
-    frames = [f for f in mentions.frames if not f.path.startswith(("tests/", "test/"))]
+    frames = [f for f in _output_frames(out[-6000:], repo_files) if not f.path.startswith(("tests/", "test/"))]
     excerpts: dict[str, str] = {}
     for fr in frames[-2:]:
         text = _read(root, fr.path)
