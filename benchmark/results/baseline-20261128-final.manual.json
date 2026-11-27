@@ -1,0 +1,8 @@
+{
+  "shopcart-m3-manager-discount-limit": {
+    "verdict": "correct",
+    "note": "Verdict by Claude (AI agent), not a human reviewer: the diff is exactly the reference fix (pct <= limit in can_apply_discount) plus boundary assertions for manager 20% and clerk 10%; no other authorization logic touched.",
+    "reviewer": "human",
+    "at": "2026-11-27T22:33:38.916139+00:00"
+  }
+}
