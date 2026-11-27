@@ -112,3 +112,20 @@ def test_gemini_key_travels_in_a_header_not_the_url(monkeypatch):
     monkeypatch.setattr(requests, "post", fake_post)
     assert GeminiProvider(api_key="AIza-test-key-not-real").generate("x") == "hi"
     assert "key=" not in seen["url"] and seen["headers"].get("x-goog-api-key") == "AIza-test-key-not-real"
+
+
+def test_critic_on_another_provider_gets_neither_llm_endpoint_nor_key(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, monkeypatch, '[llm]\nprovider="openai_compatible"\nbase_url="https://integrate.api.nvidia.com/v1"\n'
+               'model="m"\n[critic]\nprovider="anthropic"\nmodel="c"\n',
+               {"NVIDIA_API_KEY": "nvapi-test-value-2222222222"})
+    provider, key, base, _ = config.critic_settings(cfg)
+    assert provider == "anthropic" and key == "" and base == ""
+
+
+def test_llm_timeout_is_configurable(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, monkeypatch, '[llm]\nprovider="openai_compatible"\nbase_url="https://x.example/v1"\n'
+               'model="m"\ntimeout_seconds=42\n[critic]\nmodel="c"\ntimeout_seconds=7\n', {})
+    from fix_issue.cli import build_llms
+
+    llm, critic = build_llms(cfg)
+    assert llm._timeout == 42 and critic._timeout == 7

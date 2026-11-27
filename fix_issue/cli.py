@@ -92,12 +92,14 @@ def _load_cfg(config_path: str | None) -> cfg_module.Config:
 
 def build_llms(cfg: cfg_module.Config) -> tuple[LLMProvider, LLMProvider | None]:
     llm = build_provider(cfg.llm.provider, cfg.llm.api_key, cfg.llm.model, cfg.llm.base_url,
-                         temperature=cfg.llm.temperature, max_tokens=cfg.llm.max_tokens)
+                         temperature=cfg.llm.temperature, max_tokens=cfg.llm.max_tokens,
+                         timeout=cfg.llm.timeout_seconds)
     provider, key, base, model = cfg_module.critic_settings(cfg)
     critic = None
     if cfg.critic.model or cfg.critic.provider:
         critic = build_provider(provider, key, model, base, temperature=cfg.llm.temperature,
-                                max_tokens=cfg.llm.max_tokens)
+                                max_tokens=cfg.llm.max_tokens,
+                                timeout=cfg.critic.timeout_seconds or cfg.llm.timeout_seconds)
     return llm, critic
 
 

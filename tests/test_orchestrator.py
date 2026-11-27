@@ -803,3 +803,27 @@ def test_unexpected_exception_is_a_recorded_error_with_secrets_redacted(case, tm
     assert res.result == "error" and "CalledProcessError" in res.error
     assert token not in json.dumps(res.record) and token not in res.error
     assert any(e["stage"] == "traceback" for e in res.record["events"])
+
+
+def test_cannot_fix_on_a_later_plan_step_skips_the_step(pipeline):
+    """CANNOT_FIX for step S2 after S1 changed files is a statement about S2, not the issue."""
+    two_steps = plan_json(steps=[
+        {"id": "S1", "description": "Fix the 's' entry of _UNIT_SECONDS", "files": [SCHEDULE],
+         "symbols": ["_UNIT_SECONDS"], "depends_on": [], "creates_files": []},
+        {"id": "S2", "description": "Adjust format_interval if it depends on the table", "files": [SCHEDULE],
+         "symbols": ["format_interval"], "depends_on": ["S1"], "creates_files": []},
+    ])
+    llm = (ScriptedLLM().script("triage", triage_json(complexity="moderate")).script("plan", two_steps)
+           .script("edit:S1", FIX_RESPONSE)
+           .script("edit:S2", "CANNOT_FIX: No code change is needed for S2; format_interval reads the fixed table.")
+           .script("critique", critique_json()).script("pr_summary", SUMMARY))
+
+    run = pipeline(llm)
+    res, rec = run.result, run.record
+
+    assert res.result == "dry_run", res.error
+    assert changed_lines(res.final_diff) == ['-    "s": 60,', '+    "s": 1,']
+    [att] = rec["attempts"]
+    assert att["result"] == "accepted" and att["edits"][1].get("skipped") is True
+    assert any(e["stage"] == "step_skipped" for e in rec["events"])
+    llm.assert_exhausted()

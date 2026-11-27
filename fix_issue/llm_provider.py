@@ -26,7 +26,7 @@ import requests
 
 from fix_issue.redaction import redact
 
-_TIMEOUT = 120  # seconds per API call
+_TIMEOUT = 300  # default read timeout per API call (large models under load exceed 120 s)
 _RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504}
 _MAX_TRANSPORT_RETRIES = 3
 
@@ -65,11 +65,13 @@ class AnthropicProvider(LLMProvider):
         model: str = "claude-opus-4-5",
         temperature: float | None = None,
         max_tokens: int = 4096,
+        timeout: float = _TIMEOUT,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._timeout = timeout
 
     def generate(self, prompt: str, system: str | None = None) -> str:
         headers = {
@@ -88,7 +90,7 @@ class AnthropicProvider(LLMProvider):
             body["temperature"] = self._temperature
 
         resp = _post_with_retries(
-            lambda: requests.post(self.BASE_URL, headers=headers, json=body, timeout=_TIMEOUT),
+            lambda: requests.post(self.BASE_URL, headers=headers, json=body, timeout=self._timeout),
             "Anthropic",
         )
         data = resp.json()
@@ -114,12 +116,14 @@ class OpenAICompatibleProvider(LLMProvider):
         base_url: str = "https://api.openai.com/v1",
         temperature: float | None = None,
         max_tokens: int = 4096,
+        timeout: float = _TIMEOUT,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._timeout = timeout
 
     def generate(self, prompt: str, system: str | None = None) -> str:
         headers = {
@@ -141,7 +145,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
         url = f"{self._base_url}/chat/completions"
         resp = _post_with_retries(
-            lambda: requests.post(url, headers=headers, json=body, timeout=_TIMEOUT),
+            lambda: requests.post(url, headers=headers, json=body, timeout=self._timeout),
             "OpenAI-compatible",
         )
         data = resp.json()
@@ -174,11 +178,13 @@ class GeminiProvider(LLMProvider):
         model: str = "gemini-2.5-pro",
         temperature: float | None = None,
         max_tokens: int = 4096,
+        timeout: float = _TIMEOUT,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._timeout = timeout
 
     def generate(self, prompt: str, system: str | None = None) -> str:
         # The key goes in a header, never the URL: request exceptions echo the URL verbatim.
@@ -195,7 +201,7 @@ class GeminiProvider(LLMProvider):
         body["generationConfig"] = gen_cfg
 
         headers = {"x-goog-api-key": self._api_key}
-        resp = _post_with_retries(lambda: requests.post(url, json=body, headers=headers, timeout=_TIMEOUT),
+        resp = _post_with_retries(lambda: requests.post(url, json=body, headers=headers, timeout=self._timeout),
                                   "Gemini")
         data = resp.json()
         try:
@@ -216,10 +222,11 @@ def build_provider(
     base_url: str = "",
     temperature: float | None = None,
     max_tokens: int = 4096,
+    timeout: float = _TIMEOUT,
 ) -> LLMProvider:
     """Instantiate the correct provider from config values."""
     p = provider.lower()
-    kw: dict[str, Any] = {"temperature": temperature, "max_tokens": max_tokens}
+    kw: dict[str, Any] = {"temperature": temperature, "max_tokens": max_tokens, "timeout": timeout}
     if p == "anthropic":
         return AnthropicProvider(api_key=api_key, model=model, **kw)
     if p == "openai_compatible":

@@ -591,12 +591,16 @@ def _git_base_files(repo_root: Path, ref: str, names: list[str]) -> dict[str, st
 
     Reads blobs only (no textconv/filters), ignores ``refs/replace`` and never discovers a
     parent repository (GIT_CEILING_DIRECTORIES). Raises _PolicyReadError when git fails."""
-    env = {k: v for k, v in os.environ.items() if k not in _GIT_REDIRECT_ENV}
+    from fix_issue.repo_manager import git_env, git_hardening_args   # lazy: avoids an import cycle
+
+    # Same hardened invocation as every other git call (allowlisted env, no hooks/fsmonitor).
+    env = {k: v for k, v in git_env().items() if k not in _GIT_REDIRECT_ENV}
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
     try:
         env["GIT_CEILING_DIRECTORIES"] = str(Path(repo_root).resolve().parent)
         proc = subprocess.run(
-            ["git", "cat-file", "--batch"], cwd=str(repo_root), env=env, capture_output=True,
+            ["git", *git_hardening_args(), "cat-file", "--batch"], cwd=str(repo_root), env=env,
+            capture_output=True,
             input="".join(f"{ref}:{name}\n" for name in names).encode("utf-8"), timeout=60,
         )
     except (OSError, subprocess.SubprocessError) as exc:

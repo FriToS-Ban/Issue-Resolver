@@ -165,6 +165,7 @@ class Orchestrator:
             "base_url": c.llm.base_url,
             "temperature": c.llm.temperature,
             "max_tokens": c.llm.max_tokens,
+            "timeout_seconds": c.llm.timeout_seconds,
             "critic_model": c.critic.model or c.llm.model,
             "limits": c.limits.__dict__,
             "pipeline": c.pipeline.__dict__,
@@ -367,10 +368,27 @@ class Orchestrator:
                                            constraints, repo_files, budget)
                 att["edits"].append(outcome["record"])
                 if outcome.get("cannot_fix"):
-                    ui.warn(f"Model answered CANNOT_FIX: {outcome['cannot_fix']}")
+                    reason = outcome["cannot_fix"]
+                    if step is not None and ws.diff().strip():
+                        # A LATER step of a multi-step plan, after earlier steps changed files: the
+                        # model says this step needs (or allows) no change. That is not a verdict on
+                        # the whole issue: skip the step and let tests and review judge the result.
+                        ui.warn(f"step {step.id}: CANNOT_FIX ({reason[:120]}) - skipping this step")
+                        outcome["record"]["skipped"] = True
+                        rec.event("step_skipped", f"{step.id}: {reason[:300]}")
+                        if step in pending:
+                            pending.remove(step)
+                        continue
+                    if candidate is not None:
+                        # During a review round: keep the reviewed candidate (falls back below).
+                        ui.warn(f"Model answered CANNOT_FIX during a revision round: {reason[:160]}")
+                        failure = FailureAnalysis("cannot_fix", reason[:2000])
+                        attempt_budget = attempt
+                        break
+                    ui.warn(f"Model answered CANNOT_FIX: {reason}")
                     rec.append("attempts", att | {"result": "cannot_fix"})
                     ws.reset_hard()
-                    return self._finish("cannot_fix", attempts=attempt, error=outcome["cannot_fix"])
+                    return self._finish("cannot_fix", attempts=attempt, error=reason)
                 if outcome.get("failure"):
                     failure = outcome["failure"]
                     break

@@ -34,8 +34,9 @@ command goes through ``GitWorkspace._run`` / ``git_command``:
   * failures raise ``GitCommandError`` (a ``RuntimeError``) whose message, command, stdout and
     stderr have the token — plain and base64 — redacted.
 
-The token never appears in a URL, in argv of the clone or in ``.git/config``: clone and push
-authenticate with a per-command ``http.https://github.com/.extraheader``, the push goes to an
+The token never appears in a URL or in ``.git/config``: clone and push authenticate with a
+per-command ``-c http.https://github.com/.extraheader=...`` argument (so it IS on git's command
+line, base64-encoded, for the duration of those two commands), the push goes to an
 explicit URL (so a planted remote or url rewrite in the repo config cannot redirect it) with
 TLS verification forced on, and only the commit we created is pushed, on top of the base.
 

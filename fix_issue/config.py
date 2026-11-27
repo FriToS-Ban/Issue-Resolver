@@ -40,6 +40,7 @@ class LLMConfig:
     model: str = "claude-opus-4-5"
     temperature: float | None = None    # None = provider default; benchmark uses 0.0
     max_tokens: int = 4096
+    timeout_seconds: int = 300          # read timeout per API call (retried on timeout)
 
 
 @dataclass
@@ -62,6 +63,7 @@ class CriticConfig:
     api_key: str = ""
     base_url: str = ""
     model: str = ""
+    timeout_seconds: int = 0            # 0 = same as [llm]
 
 
 # Similarity a listed resolved issue needs before a "duplicate" verdict is accepted, per scorer
@@ -175,6 +177,7 @@ def load(toml_path: Path = _DEFAULT_TOML, dotenv: bool = True) -> Config:
         if "temperature" in llm_raw:
             cfg.llm.temperature = float(llm_raw["temperature"])
         cfg.llm.max_tokens = int(llm_raw.get("max_tokens", cfg.llm.max_tokens))
+        cfg.llm.timeout_seconds = int(llm_raw.get("timeout_seconds", cfg.llm.timeout_seconds))
 
         gh_raw = raw.get("github", {})
         cfg.github.token = gh_raw.get("token", cfg.github.token)
@@ -341,9 +344,13 @@ def critic_settings(cfg: Config) -> tuple[str, str, str, str]:
     """(provider, api_key, base_url, model) for the reviewer; falls back to [llm] per field."""
     c = cfg.critic
     provider = c.provider or cfg.llm.provider
-    base_url = c.base_url or cfg.llm.base_url
-    if c.api_key or provider == cfg.llm.provider and base_url == cfg.llm.base_url:
-        key = c.api_key or cfg.llm.api_key       # same provider + endpoint as [llm]
+    same_provider = provider.lower() == (cfg.llm.provider or "").lower()
+    # A critic on another provider uses that provider's default endpoint, never [llm]'s.
+    base_url = c.base_url or (cfg.llm.base_url if same_provider else "")
+    if c.api_key:
+        key = c.api_key
+    elif same_provider and base_url == cfg.llm.base_url:
+        key = cfg.llm.api_key                    # same provider + endpoint as [llm]
     else:
         key = _key_for_endpoint("", base_url, cfg) if base_url else ""
     return (provider, key, base_url, c.model or cfg.llm.model)
