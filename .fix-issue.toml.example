@@ -1,41 +1,130 @@
-# ~/.fix-issue.toml — Personal defaults for fix-issue
+# ~/.fix-issue.toml — personal settings for fix-issue.
 #
-# This file lives in your home directory.
-# Personal secrets (tokens, API keys) belong HERE — not in a repo-committed file.
-# Copy this to ~/.fix-issue.toml and fill in your values.
+# Copy to ~/.fix-issue.toml (or pass any file with --config). Every key is optional; anything
+# left out uses the default from fix_issue/config.py (noted as "default:" below). This example
+# is a working NVIDIA NIM setup with the API key taken from the environment.
 #
-# Per-repo scope rules belong in .fix-issue-ignore (checked into the target repo).
+# Environment variables, including a .env file in the current directory, override this file
+# (see .env.example). Per-repository scope rules belong in the target repository
+# (.fix-issue-ignore, .fix-issue-scope.toml), not here.
+#
+# NIM models: the three below work at the time of writing. deepseek-ai/deepseek-v4.1-flash is
+# end-of-life on NIM and no longer works.
 
 [llm]
-# Provider: anthropic | openai_compatible | gemini
-provider = "anthropic"
+# anthropic | openai_compatible | gemini                                (default: anthropic)
+provider = "openai_compatible"
 
-# API key for the selected provider
+# Leave empty to take the key from the environment: NVIDIA_API_KEY is used automatically when
+# base_url contains "nvidia.com" and LLM_API_KEY is not set; LLM_API_KEY works for any provider.
 api_key = ""
 
-# Base URL — only needed for openai_compatible
-# Leave blank to use https://api.openai.com/v1 (OpenAI default)
-# Ollama: http://localhost:11434/v1
-# NVIDIA NIM: https://integrate.api.nvidia.com/v1
-base_url = ""
+# Required for openai_compatible; ignored by anthropic and gemini.         (default: empty)
+#   NVIDIA NIM: https://integrate.api.nvidia.com/v1
+#   OpenAI:     https://api.openai.com/v1
+#   Ollama:     http://localhost:11434/v1
+base_url = "https://integrate.api.nvidia.com/v1"
 
-# Model name (must match the provider's model ID)
-model = "claude-opus-4-5"
+# Implementer model.                                                  (default: claude-opus-4-5)
+model = "nvidia/nemotron-3-ultra-550b-a55b"
+
+# Sampling temperature for implementer and critic. Leave it out to use the provider's default.
+# The benchmark uses 0.0.
+# temperature = 0.0
+
+# Max output tokens per call, implementer and critic.                         (default: 4096)
+max_tokens = 8192
 
 [github]
-# Personal access token with repo + pull_request scopes
+# Token with read/write access to contents, issues and pull requests. Leave empty to use
+# GITHUB_TOKEN from the environment. Not needed for `fix-issue bench`.
 token = ""
 
 [limits]
-# Maximum number of ±-prefixed lines the generated diff may contain.
-# Diffs over this limit are rejected BEFORE any test run.
-max_diff_lines = 150
+# Full profile: weighted changed lines (tests x0.5, docs x0.25, source x1.0).
+# Baseline profile: raw +/- lines. Triage can lower this for an issue, never raise it.
+max_diff_lines = 150          # default: 150
 
-# Maximum number of patch-generate / apply / test cycles per issue.
-max_retries = 3
+# Attempts per issue. Triage can lower it; each review revision round adds one.
+max_retries = 3               # default: 3
 
-# Maximum number of files passed as context to the LLM.
-relevant_files = 5
+# Files given to the model as context (a minimum in the full profile, exact in baseline).
+relevant_files = 5            # default: 5
 
-# Seconds before the test suite run is killed.
-test_timeout_seconds = 300
+# Seconds before a test-suite run is killed.
+test_timeout_seconds = 300    # default: 300
+
+[critic]
+# The independent reviewer. Every empty field falls back to [llm]. A separate reviewer model is
+# only used when model or provider is set here (or --critic-model is passed); otherwise the
+# implementer model reviews with the separate reviewer prompt.
+# If the critic uses a different provider than [llm], set its api_key too: the NVIDIA_API_KEY
+# fallback applies to [llm] only, and the critic inherits whatever key [llm] ends up with.
+provider = ""                 # default: [llm] provider
+api_key  = ""                 # default: [llm] api_key
+base_url = ""                 # default: [llm] base_url
+model    = "mistralai/mistral-large-4-1t-a52b"   # a different model family than the implementer
+
+[pipeline]
+# full = repository-aware pipeline; baseline = original v1 pipeline (for comparison).
+profile = "full"              # default: full
+
+# Plan before editing (--no-plan turns it off).
+planning = true               # default: true
+
+# Independent review with deterministic gates (--no-critique turns it off; without it there is
+# no verdict, so PRs are never drafts).
+critique = true               # default: true
+
+# NEEDS_REVISION rounds before the verdict becomes HUMAN_REVIEW.
+max_critique_rounds = 1       # default: 1
+
+# Plan revisions triggered when execution evidence contradicts the plan.
+max_plan_revisions = 1        # default: 1
+
+# Source-context budget (characters) per prompt.
+max_context_chars = 60000     # default: 60000
+
+# duplicate_threshold: similarity (0..1) a recently resolved issue needs before a "duplicate"
+# triage verdict is accepted; below it the verdict is downgraded. Leave it out to use the
+# per-scorer defaults (DUPLICATE_THRESHOLDS in fix_issue/config.py), which differ because local
+# n-gram and API embedding similarities are on different scales. To override, either set one
+# number for every scorer:
+#   duplicate_threshold = <0..1>
+# or a table keyed by scorer ("local", an embedding model name, "default"), merged over the
+# defaults. A table has to come after the plain [pipeline] keys:
+#   [pipeline.duplicate_threshold]
+#   "nvidia/nemotron-3.5-embed-1b" = <0..1>
+
+[retrieval]
+# local = offline n-gram vectors (not a semantic model); openai_compatible = any /embeddings
+# endpoint; none = no embeddings. If the API embedder is misconfigured, local vectors are used.
+embedding_backend = "openai_compatible"   # default: local
+
+# Required for openai_compatible.                                          (default: empty)
+embedding_model = "nvidia/nemotron-3.5-embed-1b"
+
+# Empty = [llm] base_url.
+embedding_base_url = "https://integrate.api.nvidia.com/v1"
+
+# Empty = [llm] api_key (which includes the NVIDIA_API_KEY fallback). Set it when [llm] is not NIM.
+embedding_api_key = ""
+
+# Embedding cache for the pipeline. Empty = ~/.fix-issue/cache (or $FIX_ISSUE_HOME/cache).
+cache_dir = ""
+
+[validation]
+# Run the target repository's own configured tools on the changed files; only findings the
+# patch introduces count.
+run_linters = true            # default: true
+run_type_checkers = true      # default: true
+run_formatters = true         # default: true
+
+# Allow `npm run lint`, `make lint`, `tox -e lint`. These run arbitrary repository code.
+allow_project_scripts = false # default: false
+
+# argv prefix wrapped around every test and linter command of the full profile, meant for a
+# container wrapper such as ["docker", "run", "--rm", ...]. UNTESTED: commands use the host
+# interpreter path and the host working directory, so the wrapper has to make both valid inside
+# the container. Empty = no wrapper (secrets stripped from the environment, timeouts, no shell).
+sandbox_prefix = []           # default: []
