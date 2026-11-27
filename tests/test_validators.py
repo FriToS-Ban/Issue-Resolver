@@ -109,12 +109,61 @@ def test_node_and_go_tools(tmp_path, installed):
     bin_dir.mkdir(parents=True)
     (bin_dir / "eslint").write_text("")
     (bin_dir / "tsc").write_text("")
-    installed["path"] |= {"go"}
+    entry = _node_entry(tmp_path, "eslint", "bin", "eslint.js")
+    _node_entry(tmp_path, "typescript", "bin", "tsc")
+    installed["path"] |= {"go", "node"}
     tools, _ = discover_tools(tmp_path)
     by_name = {t.name: t for t in tools}
-    assert by_name["eslint"].per_file and by_name["eslint"].command[-2:] == ["-f", "json"]
+    assert by_name["eslint"].per_file and by_name["eslint"].command == ["/fake/bin/node", str(entry.resolve()),
+                                                                        "-f", "json"]
     assert not by_name["tsc"].per_file and by_name["tsc"].kind == "typecheck"
     assert by_name["go-vet"].command == ["/fake/bin/go", "vet", "./..."]
+
+
+def _node_entry(root: Path, *parts: str) -> Path:
+    path = root.joinpath("node_modules", *parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("")
+    return path
+
+
+def test_node_cmd_shims_are_never_run(tmp_path, installed, monkeypatch):
+    """eslint gets model-chosen file names: never through a .cmd shim (cmd.exe would parse them)."""
+    (tmp_path / ".eslintrc.json").write_text("{}")
+    (tmp_path / "tsconfig.json").write_text("{}")
+    bin_dir = tmp_path / "node_modules" / ".bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "eslint.cmd").write_text("@echo off\n")
+    (bin_dir / "tsc.cmd").write_text("@echo off\n")
+    tools, skipped = discover_tools(tmp_path)
+    assert {"eslint", "tsc"}.isdisjoint(_names(tools))
+    assert ".cmd" in _skipped(skipped, "eslint")[0] and ".cmd" in _skipped(skipped, "tsc")[0]
+
+    entry = _node_entry(tmp_path, "eslint", "bin", "eslint.js")      # node + the JS entry point: fine
+    installed["path"] |= {"node"}
+    tools, _ = discover_tools(tmp_path)
+    eslint = next(t for t in tools if t.name == "eslint")
+    assert eslint.command[:2] == ["/fake/bin/node", str(entry.resolve())]
+
+    # a batch-file "node" on PATH is not good enough either
+    monkeypatch.setattr(validators, "_which", lambda exe: "C:/shims/node.cmd" if exe == "node" else None)
+    tools, skipped = discover_tools(tmp_path)
+    assert "eslint" not in _names(tools) and ".cmd" in _skipped(skipped, "eslint")[0]
+
+
+def test_per_file_tools_resolving_to_batch_files_are_skipped(tmp_path, monkeypatch):
+    (tmp_path / "pyrightconfig.json").write_text("{}")
+    (tmp_path / "pyproject.toml").write_text("[tool.black]\n")
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"lint": "eslint ."}}))
+    monkeypatch.setattr(validators, "_resolve_python_tool", lambda module, exe: [f"C:/tools/{exe}.BAT"])
+    monkeypatch.setattr(validators, "_which", lambda exe: f"C:/npm/{exe}.cmd")
+    tools, skipped = discover_tools(tmp_path, ValidationConfig(allow_project_scripts=True))
+    names = _names(tools)
+    assert "pyright" not in names and "black" not in names
+    assert "pyright.cmd" in _skipped(skipped, "pyright")[0] and "black.BAT" in _skipped(skipped, "black")[0]
+    # a project script gets no file names (fixed arguments only), so npm.cmd may run it
+    npm = next(t for t in tools if t.name == "npm-lint")
+    assert npm.command == ["C:/npm/npm.cmd", "run", "--silent", "lint"] and not npm.per_file
 
 
 def test_project_scripts_gated(tmp_path, installed):
@@ -350,3 +399,44 @@ def test_result_to_dict_is_serializable(tmp_path, repo):
     [res] = run_validators(root, [_fake_tool(tmp_path)], ["a.py"])
     data = json.loads(json.dumps(res.to_dict()))
     assert data["tool"] == "fake-lint" and data["new_findings"][0]["code"] == "BAD001"
+
+
+def test_batch_file_never_receives_file_names_at_run_time(tmp_path, repo):
+    root, made = repo
+    (root / "a.py").write_text("x = 1\n")
+    tool = ToolSpec("shim-lint", "lint", [str(tmp_path / "lint.cmd")], True, "test")
+    [res] = run_validators(root, [tool], ["a.py"])
+    assert not res.ran and res.ok and ".cmd" in res.skipped_reason
+
+
+def _hook(path: Path, marker: Path, tag: str, tail: str = "") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\necho {tag} >> '{marker.as_posix()}'\n{tail}", newline="\n")
+    path.chmod(0o755)
+
+
+def test_baseline_worktree_ignores_hooks_and_config_planted_by_repo_code(tmp_path, repo):
+    """Inside a workspace, `git worktree add` gets the hardening and the restored .git/config."""
+    from fix_issue.repo_manager import LocalWorkspace
+
+    root, made = repo
+    marker = tmp_path / "ran.txt"
+    smudge = tmp_path / "smudge.sh"
+    evil_filter = f"[filter \"evil\"]\n\tsmudge = sh '{smudge.as_posix()}'\n\tclean = cat\n"
+    with LocalWorkspace(root, branch="fix"):
+        _hook(root / ".git" / "hooks" / "post-checkout", marker, "post-checkout")
+        _hook(smudge, marker, "smudge", "cat\n")
+        with open(root / ".git" / "config", "a", encoding="utf-8") as f:
+            f.write(evil_filter)
+        (root / ".git" / "info").mkdir(exist_ok=True)
+        (root / ".git" / "info" / "attributes").write_text("*.py filter=evil\n")
+        (root / "a.py").write_text("x = 1  # BAD old\nz = 3  # BAD new\n")
+        [res] = run_validators(root, [_fake_tool(tmp_path)], ["a.py"])
+        assert res.ran and not res.ok and len(res.new_findings) == 1
+    assert not marker.exists(), marker.read_text()
+    _assert_worktree_cleaned(root, made)
+
+    with open(root / ".git" / "config", "a", encoding="utf-8") as f:   # control: the vectors are live
+        f.write(evil_filter)
+    _git(root, "worktree", "add", "--detach", str(tmp_path / "control-wt"), "HEAD")
+    assert set(marker.read_text().split()) >= {"post-checkout", "smudge"}

@@ -38,8 +38,8 @@ flake8       lint       .flake8, [flake8] in setup.cfg or tox.ini               
 mypy         typecheck  [tool.mypy], mypy.ini, .mypy.ini, [mypy] in setup.cfg        ``python -m mypy`` / PATH
 pyright      typecheck  pyrightconfig.json, [tool.pyright]                            pyright on PATH
 black        format     [tool.black]                                                  ``python -m black`` / PATH
-eslint       lint       .eslintrc*, eslint.config.*, "eslintConfig" in package.json   node_modules/.bin/eslint
-tsc          typecheck  tsconfig.json                                                 node_modules/.bin/tsc
+eslint       lint       .eslintrc*, eslint.config.*, "eslintConfig" in package.json   node + eslint/bin/eslint.js
+tsc          typecheck  tsconfig.json                                                 node + typescript/bin/tsc
 go-vet       lint       go.mod                                                        go on PATH
 npm-lint     lint       package.json "lint" script      (allow_project_scripts)       npm on PATH
 make-lint    lint       Makefile "lint:" target         (allow_project_scripts)       make on PATH
@@ -50,11 +50,16 @@ tox-lint     lint       [testenv:lint] in tox.ini       (allow_project_scripts) 
 Project scripts run arbitrary repository code, so they are only used with
 ``[validation] allow_project_scripts = true``.
 
-Hygiene: every subprocess goes through ``sandbox.run_command`` (sanitized env, timeout, no
-shell); Python tools run as ``python -P -m <tool>`` so a module planted in the repo cannot
-shadow the tool; the baseline worktree is created with hooks disabled; file arguments that
-start with ``-`` are passed as ``./-name``. For eslint/tsc/project scripts the repo's
-``node_modules`` is linked into the baseline worktree (and unlinked before removal) so
+Hygiene: every subprocess goes through ``sandbox.run_command`` (allowlist env, wall-clock
+timeout with process-tree kill, no shell); Python tools run as ``python -P -m <tool>`` so a
+module planted in the repo cannot shadow the tool; git calls for the baseline worktree are
+built by ``repo_manager.git_command`` (hooks and fsmonitor disabled, the workspace's
+``.git/config`` snapshot restored first); file arguments that start with ``-`` are passed as
+``./-name``. A tool whose command is a ``.cmd``/``.bat`` file never gets the (model-chosen)
+changed file names, because cmd.exe re-parses them: node tools run as ``node <entry>.js`` and
+are skipped when only the ``node_modules/.bin/*.cmd`` shim is available, and a per-file tool
+that resolves to a batch file is skipped with that reason. For eslint/tsc/project scripts the
+repo's ``node_modules`` is linked into the baseline worktree (and unlinked before removal) so
 plugins resolve the same way in both runs.
 """
 
@@ -75,7 +80,8 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from fix_issue.config import ValidationConfig
-from fix_issue.sandbox import python_executable, run_command
+from fix_issue.repo_manager import GitCommandError, git_command
+from fix_issue.sandbox import is_batch_file, python_executable, run_command
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -231,19 +237,27 @@ def _resolve_python_tool(module: str | None, exe: str) -> list[str] | None:
     return [found] if found else None
 
 
-def _node_tool(root: Path, bin_name: str, js_parts: tuple[str, ...]) -> list[str] | None:
-    """Command for a node_modules tool; prefers `node <entry>.js` over the .bin shim."""
+def _node_tool(root: Path, bin_name: str, js_parts: tuple[str, ...]) -> tuple[list[str] | None, str]:
+    """
+    (command, reason-if-unavailable) for a node_modules tool: ``node <entry>.js``.
+
+    The ``.bin`` shim is only a fallback on POSIX (a symlink/script with a shebang, exec'd
+    without a shell). On Windows the shims are ``.cmd`` files run by cmd.exe, which would
+    re-parse the model-chosen file names we pass (BatBadBut-style injection): never used.
+    """
     bin_dir = root / "node_modules" / ".bin"
-    shims = [bin_dir / f"{bin_name}.cmd", bin_dir / bin_name] if os.name == "nt" else \
-            [bin_dir / bin_name, bin_dir / f"{bin_name}.cmd"]
-    existing = [s for s in shims if s.is_file()]
-    if not existing:
-        return None
     entry = root.joinpath("node_modules", *js_parts)
+    posix_shim = bin_dir / bin_name
+    has_shim = posix_shim.is_file() or any((bin_dir / f"{bin_name}{ext}").is_file() for ext in (".cmd", ".bat"))
+    if not has_shim and not entry.is_file():
+        return None, f"node_modules/.bin/{bin_name} not found (run npm install)"
     node = _which("node")
-    if node and entry.is_file():
-        return [node, str(entry.resolve())]
-    return [str(existing[0].resolve())]
+    if node and not is_batch_file(node) and entry.is_file():
+        return [node, str(entry.resolve())], ""
+    if os.name != "nt" and posix_shim.is_file():
+        return [str(posix_shim.resolve())], ""
+    return None, (f"node or node_modules/{'/'.join(js_parts)} not available, and the node_modules/.bin "
+                  f"shim is not run (on Windows it is a .cmd file: cmd.exe would interpret file names)")
 
 
 def discover_tools(root: Path, cfg: ValidationConfig | None = None) -> tuple[list[ToolSpec], list[dict]]:
@@ -285,6 +299,11 @@ def discover_tools(root: Path, cfg: ValidationConfig | None = None) -> tuple[lis
         prefix = resolve()
         if not prefix:
             skipped.append({"tool": name, "reason": f"configured ({reason}) but {missing}"})
+            return
+        if per_file and is_batch_file(prefix[0]):
+            skipped.append({"tool": name, "reason": (
+                f"configured ({reason}) but it resolves to {Path(prefix[0]).name}, a .cmd/.bat file; "
+                f"cmd.exe would interpret the changed file names, so it is not run")})
             return
         tools.append(ToolSpec(name, kind, [*prefix, *args], per_file, reason, project_script))
 
@@ -355,13 +374,12 @@ def discover_tools(root: Path, cfg: ValidationConfig | None = None) -> tuple[lis
     eslint_cfg = next((n for n in _ESLINT_CONFIGS if (root / n).is_file()), None)
     reason = (f"{eslint_cfg} present" if eslint_cfg
               else '"eslintConfig" in package.json' if "eslintConfig" in pkg else None)
-    consider("eslint", "lint", reason, lambda: _node_tool(root, "eslint", ("eslint", "bin", "eslint.js")),
-             ["-f", "json"], missing="node_modules/.bin/eslint not found (run npm install)")
+    eslint_cmd, eslint_missing = _node_tool(root, "eslint", ("eslint", "bin", "eslint.js"))
+    consider("eslint", "lint", reason, lambda: eslint_cmd, ["-f", "json"], missing=eslint_missing)
 
+    tsc_cmd, tsc_missing = _node_tool(root, "tsc", ("typescript", "bin", "tsc"))
     consider("tsc", "typecheck", "tsconfig.json present" if (root / "tsconfig.json").is_file() else None,
-             lambda: _node_tool(root, "tsc", ("typescript", "bin", "tsc")),
-             ["--noEmit", "--pretty", "false"], per_file=False,
-             missing="node_modules/.bin/tsc not found (run npm install)")
+             lambda: tsc_cmd, ["--noEmit", "--pretty", "false"], per_file=False, missing=tsc_missing)
 
     # --- Go ------------------------------------------------------------------
     consider("go-vet", "lint", "go.mod present" if (root / "go.mod").is_file() else None,
@@ -629,8 +647,13 @@ def _safe_arg(rel: str) -> str:
 def _execute(tool: ToolSpec, cwd: Path, files: list[str], timeout: int, prefix: list[str] | None) -> _Run:
     cmd = list(tool.command)
     if tool.per_file:
+        if cmd and is_batch_file(cmd[0]):
+            return _Run([], "", None, 0.0, skip_reason=f"{Path(cmd[0]).name} is a .cmd/.bat file; "
+                                                       f"file names are never passed to cmd.exe")
         cmd += [_safe_arg(f) for f in files]
     res = run_command(cmd, cwd, timeout=timeout, prefix=prefix, max_output=_MAX_OUTPUT)
+    if res.refused:
+        return _Run([], res.output, None, res.duration_seconds, skip_reason=res.output)
     if res.not_found:
         return _Run([], res.output, None, res.duration_seconds, skip_reason=f"command not found: {cmd[0]}")
     if res.timed_out:
@@ -759,10 +782,12 @@ def _baseline_worktree(root: Path, base_ref: str, link_env: bool) -> Iterator[tu
         if not base_ref or base_ref.startswith("-"):
             yield None, f"invalid base ref {base_ref!r}"
             return
-        hooks = tmp / "no-hooks"
-        hooks.mkdir(exist_ok=True)
-        res = run_command(["git", "-c", f"core.hooksPath={hooks}", "worktree", "add", "--detach",
-                           str(wt), base_ref], cwd=root, timeout=300)
+        try:
+            add = git_command(root, "worktree", "add", "--detach", str(wt), base_ref)
+        except GitCommandError as exc:
+            yield None, f"could not create baseline worktree: {exc}"
+            return
+        res = run_command(add, cwd=root, timeout=300)
         if not res.ok:
             yield None, f"could not create baseline worktree at {base_ref}: {res.output.strip()[-300:]}"
             return
@@ -779,11 +804,13 @@ def _baseline_worktree(root: Path, base_ref: str, link_env: bool) -> Iterator[tu
             except OSError:
                 unlinked = False
         if wt.exists() and unlinked:
-            run_command(["git", "worktree", "remove", "--force", str(wt)], cwd=root, timeout=120)
+            with contextlib.suppress(GitCommandError):
+                run_command(git_command(root, "worktree", "remove", "--force", str(wt)), cwd=root, timeout=120)
         if wt.exists():
             # rmtree does not follow symlinks/junctions (Python >= 3.8), so a link left behind is safe.
             shutil.rmtree(wt, ignore_errors=True)
-        run_command(["git", "worktree", "prune"], cwd=root, timeout=60)
+        with contextlib.suppress(GitCommandError):
+            run_command(git_command(root, "worktree", "prune"), cwd=root, timeout=60)
         shutil.rmtree(tmp, ignore_errors=True)
 
 

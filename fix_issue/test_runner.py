@@ -4,8 +4,11 @@ test_runner.py — Run the target repo's test suite and capture the result.
 Designed to do one thing: execute the detected test command, capture output,
 and return a structured result. The retry loop lives in the orchestrator.
 
-Commands run through ``sandbox.run_command``: secrets are stripped from the child
-environment, there is a hard timeout, and no shell is involved.
+Commands run through ``sandbox.run_command`` (the only way this module starts a process):
+the child gets an allowlist environment (no tokens or API keys), no shell is involved, the
+timeout is wall-clock and kills the whole process tree, output is captured in temporary files
+(a lingering grandchild cannot block us), and a ``.bat``/``.cmd`` command is refused when an
+argument contains characters cmd.exe would interpret.
 """
 
 from __future__ import annotations
@@ -74,6 +77,8 @@ def run_tests(
     res = run_command(full, cwd, timeout=timeout_seconds, prefix=prefix)
     if res.timed_out:
         output = f"Test suite timed out after {timeout_seconds}s.\n{res.output}"
+    elif res.refused:
+        output = res.output
     elif res.not_found:
         output = (
             f"Test command not found: {full[0]}. "
