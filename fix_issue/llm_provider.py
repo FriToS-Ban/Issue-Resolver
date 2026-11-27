@@ -24,6 +24,8 @@ from typing import Any, Callable, Iterator
 
 import requests
 
+from fix_issue.redaction import redact
+
 _TIMEOUT = 120  # seconds per API call
 _RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504}
 _MAX_TRANSPORT_RETRIES = 3
@@ -179,7 +181,8 @@ class GeminiProvider(LLMProvider):
         self._max_tokens = max_tokens
 
     def generate(self, prompt: str, system: str | None = None) -> str:
-        url = f"{self.BASE_URL}/{self._model}:generateContent?key={self._api_key}"
+        # The key goes in a header, never the URL: request exceptions echo the URL verbatim.
+        url = f"{self.BASE_URL}/{self._model}:generateContent"
         contents: list[dict[str, Any]] = [
             {"role": "user", "parts": [{"text": prompt}]}
         ]
@@ -191,9 +194,15 @@ class GeminiProvider(LLMProvider):
             gen_cfg["temperature"] = self._temperature
         body["generationConfig"] = gen_cfg
 
-        resp = _post_with_retries(lambda: requests.post(url, json=body, timeout=_TIMEOUT), "Gemini")
+        headers = {"x-goog-api-key": self._api_key}
+        resp = _post_with_retries(lambda: requests.post(url, json=body, headers=headers, timeout=_TIMEOUT),
+                                  "Gemini")
         data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        try:
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError, TypeError) as exc:   # e.g. a safety-blocked candidate has no parts
+            reason = (data.get("candidates") or [{}])[0].get("finishReason") if isinstance(data, dict) else None
+            raise LLMError(f"Gemini returned no text (finishReason={reason})") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -235,9 +244,9 @@ def _raise_for_llm_error(resp: requests.Response, provider_name: str) -> None:
             detail = json.dumps(resp.json(), indent=2)
         except Exception:
             detail = resp.text[:500]
-        raise LLMError(
+        raise LLMError(redact(
             f"{provider_name} API returned HTTP {resp.status_code}:\n{detail}"
-        )
+        ))
 
 
 def _post_with_retries(send: Callable[[], requests.Response], provider_name: str) -> requests.Response:
@@ -247,7 +256,7 @@ def _post_with_retries(send: Callable[[], requests.Response], provider_name: str
             resp = send()
         except requests.exceptions.RequestException as e:
             if attempt == _MAX_TRANSPORT_RETRIES:
-                raise LLMError(f"{provider_name} API request failed ({type(e).__name__}): {e}") from e
+                raise LLMError(redact(f"{provider_name} API request failed ({type(e).__name__}): {e}")) from e
             time.sleep(min(30.0, 2.0 * 2 ** attempt))
             continue
         if resp.status_code in _RETRY_STATUS and attempt < _MAX_TRANSPORT_RETRIES:
@@ -297,7 +306,7 @@ class RecordingLLM(LLMProvider):
         try:
             out = self.inner.generate(prompt, system=system)
         except Exception as e:
-            entry.update(error=f"{type(e).__name__}: {e}"[:500], seconds=round(time.monotonic() - start, 2))
+            entry.update(error=redact(f"{type(e).__name__}: {e}")[:500], seconds=round(time.monotonic() - start, 2))
             self.calls.append(entry)
             raise
         entry.update(

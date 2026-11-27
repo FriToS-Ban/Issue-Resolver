@@ -16,6 +16,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -120,8 +121,17 @@ class Config:
     validation: ValidationConfig = field(default_factory=ValidationConfig)
 
 
+# Only the tool's own settings are taken from a .env file. Anything else (GIT_*, PATH, proxy
+# variables...) would change how git and the repository's code behave for the whole run.
+_DOTENV_PREFIXES = ("FIX_ISSUE_", "LLM_")
+_DOTENV_KEYS = {"NVIDIA_API_KEY", "GITHUB_TOKEN"}
+
+
 def load_dotenv(path: Path | None = None) -> list[str]:
-    """Load KEY=VALUE lines from a .env file into os.environ (existing vars win). Returns keys set."""
+    """Load fix-issue's own KEY=VALUE lines from a .env file into os.environ (existing vars win).
+
+    Keys outside ``_DOTENV_PREFIXES``/``_DOTENV_KEYS`` are ignored. Returns the keys set.
+    """
     path = path or (Path.cwd() / ".env")
     if not path.is_file():
         return []
@@ -134,6 +144,8 @@ def load_dotenv(path: Path | None = None) -> list[str]:
             line = line[len("export "):]
         key, value = line.split("=", 1)
         key, value = key.strip(), value.strip().strip('"').strip("'")
+        if not (key in _DOTENV_KEYS or key.startswith(_DOTENV_PREFIXES)):
+            continue
         if key and key not in os.environ:
             os.environ[key] = value
             loaded.append(key)
@@ -187,7 +199,7 @@ def load(toml_path: Path = _DEFAULT_TOML, dotenv: bool = True) -> Config:
     if (
         "LLM_API_KEY" not in os.environ
         and os.environ.get("NVIDIA_API_KEY")
-        and "nvidia.com" in (cfg.llm.base_url or "")
+        and is_nvidia_endpoint(cfg.llm.base_url)
     ):
         cfg.llm.api_key = os.environ["NVIDIA_API_KEY"]
 
@@ -204,7 +216,44 @@ def load(toml_path: Path = _DEFAULT_TOML, dotenv: bool = True) -> Config:
     if os.environ.get("FIX_ISSUE_EMBEDDING_BACKEND"):
         cfg.retrieval.embedding_backend = os.environ["FIX_ISSUE_EMBEDDING_BACKEND"]
 
+    from fix_issue.redaction import register_secret
+
+    for secret in (cfg.llm.api_key, cfg.github.token, cfg.critic.api_key, cfg.retrieval.embedding_api_key,
+                   os.environ.get("NVIDIA_API_KEY")):
+        register_secret(secret)
     return cfg
+
+
+def is_nvidia_endpoint(url: str | None) -> bool:
+    """True only for https URLs whose host is nvidia.com or a subdomain of it (not a substring match)."""
+    try:
+        parsed = urlparse(url or "")
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return parsed.scheme == "https" and (host == "nvidia.com" or host.endswith(".nvidia.com"))
+
+
+def _host(url: str | None) -> str:
+    try:
+        return (urlparse(url or "").hostname or "").lower().rstrip(".")
+    except ValueError:
+        return ""
+
+
+def _key_for_endpoint(own_key: str, base_url: str, cfg: Config) -> str:
+    """API key for a secondary endpoint (critic, embeddings) that has none of its own.
+
+    The [llm] key is reused only when the endpoint is the same host as [llm]; an NVIDIA endpoint
+    can use NVIDIA_API_KEY. A key is never sent to a host it was not configured for.
+    """
+    if own_key:
+        return own_key
+    if _host(base_url) == _host(cfg.llm.base_url):
+        return cfg.llm.api_key
+    if is_nvidia_endpoint(base_url) and os.environ.get("NVIDIA_API_KEY"):
+        return os.environ["NVIDIA_API_KEY"]
+    return ""
 
 
 def _overlay(target: object, raw: dict) -> None:
@@ -214,7 +263,8 @@ def _overlay(target: object, raw: dict) -> None:
             continue
         current = getattr(target, key)
         if isinstance(current, bool):
-            value = bool(value)
+            # bool("false") is True: accept TOML booleans and the usual spellings in strings.
+            value = value.strip().lower() in ("1", "true", "yes", "on") if isinstance(value, str) else bool(value)
         elif isinstance(current, int) and not isinstance(current, bool):
             value = int(value)
         elif isinstance(current, float):
@@ -290,20 +340,17 @@ def validate(cfg: Config) -> list[str]:
 def critic_settings(cfg: Config) -> tuple[str, str, str, str]:
     """(provider, api_key, base_url, model) for the reviewer; falls back to [llm] per field."""
     c = cfg.critic
-    return (
-        c.provider or cfg.llm.provider,
-        c.api_key or cfg.llm.api_key,
-        c.base_url or cfg.llm.base_url,
-        c.model or cfg.llm.model,
-    )
+    provider = c.provider or cfg.llm.provider
+    base_url = c.base_url or cfg.llm.base_url
+    if c.api_key or provider == cfg.llm.provider and base_url == cfg.llm.base_url:
+        key = c.api_key or cfg.llm.api_key       # same provider + endpoint as [llm]
+    else:
+        key = _key_for_endpoint("", base_url, cfg) if base_url else ""
+    return (provider, key, base_url, c.model or cfg.llm.model)
 
 
 def embedding_settings(cfg: Config) -> tuple[str, str, str, str]:
     """(backend, base_url, api_key, model) for retrieval embeddings."""
     r = cfg.retrieval
-    return (
-        r.embedding_backend,
-        r.embedding_base_url or cfg.llm.base_url,
-        r.embedding_api_key or cfg.llm.api_key,
-        r.embedding_model,
-    )
+    base_url = r.embedding_base_url or cfg.llm.base_url
+    return (r.embedding_backend, base_url, _key_for_endpoint(r.embedding_api_key, base_url, cfg), r.embedding_model)
