@@ -24,7 +24,7 @@
       "all_found": 0.9,
       "symbol_recall": 0.692,
       "mean_files_returned": 3.25,
-      "mean_context_chars": 11452.75,
+      "mean_context_chars": 11449.85,
       "errors": 0,
       "recall@5_easy": 1.0,
       "recall@5_medium": 0.857,
@@ -39,7 +39,7 @@
       "all_found": 0.9,
       "symbol_recall": 0.642,
       "mean_files_returned": 3.2,
-      "mean_context_chars": 11223.7,
+      "mean_context_chars": 11221.05,
       "errors": 0,
       "recall@5_easy": 1.0,
       "recall@5_medium": 0.857,
@@ -64,7 +64,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.16,
+        "seconds": 0.19,
         "context_chars": 14749,
         "ranked": [
           "shopcart/shipping.py",
@@ -88,8 +88,8 @@
         "all_found": true,
         "returned": 2,
         "symbol_recall": 0.0,
-        "seconds": 0.12,
-        "context_chars": 9110,
+        "seconds": 0.27,
+        "context_chars": 9106,
         "ranked": [
           "shopcart/shipping.py",
           "shopcart/checkout.py"
@@ -99,7 +99,7 @@
           "shopcart/shipping.py": [
             "file named in the issue text",
             "defines `shipping_cost_cents` (mentioned in issue)",
-            "lexical match on parcel, page, info, tier, cost, limit (BM25 1.00)"
+            "lexical match on page, parcel, tier, info, shipping_cost_cent, limit (BM25 1.00)"
           ]
         }
       },
@@ -111,8 +111,8 @@
         "all_found": true,
         "returned": 2,
         "symbol_recall": 0.0,
-        "seconds": 0.41,
-        "context_chars": 9144,
+        "seconds": 0.72,
+        "context_chars": 9140,
         "ranked": [
           "shopcart/shipping.py",
           "shopcart/checkout.py"
@@ -122,7 +122,7 @@
           "shopcart/shipping.py": [
             "file named in the issue text",
             "defines `shipping_cost_cents` (mentioned in issue)",
-            "lexical match on parcel, page, info, tier, cost, limit (BM25 1.00)"
+            "lexical match on page, parcel, tier, info, shipping_cost_cent, limit (BM25 1.00)"
           ]
         }
       }
@@ -144,7 +144,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.09,
+        "seconds": 0.16,
         "context_chars": 18539,
         "ranked": [
           "shopcart/checkout.py",
@@ -168,8 +168,8 @@
         "all_found": true,
         "returned": 1,
         "symbol_recall": 1.0,
-        "seconds": 0.12,
-        "context_chars": 3838,
+        "seconds": 0.25,
+        "context_chars": 3836,
         "ranked": [
           "shopcart/utils/money.py"
         ],
@@ -178,7 +178,7 @@
           "shopcart/utils/money.py": [
             "file named in the issue text",
             "defines `format_money` (mentioned in issue)",
-            "lexical match on symbol, format_mone, dollar, receipt, amount, format (BM25 1.00)"
+            "lexical match on format_mone, symbol, dollar, receipt, amount, format (BM25 1.00)"
           ]
         }
       },
@@ -190,8 +190,8 @@
         "all_found": true,
         "returned": 1,
         "symbol_recall": 1.0,
-        "seconds": 0.41,
-        "context_chars": 3868,
+        "seconds": 0.66,
+        "context_chars": 3866,
         "ranked": [
           "shopcart/utils/money.py"
         ],
@@ -200,7 +200,7 @@
           "shopcart/utils/money.py": [
             "file named in the issue text",
             "defines `format_money` (mentioned in issue)",
-            "lexical match on symbol, format_mone, dollar, receipt, amount, format (BM25 1.00)"
+            "lexical match on format_mone, symbol, dollar, receipt, amount, format (BM25 1.00)"
           ]
         }
       }
@@ -222,7 +222,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.09,
+        "seconds": 0.17,
         "context_chars": 18974,
         "ranked": [
           "shopcart/checkout.py",
@@ -246,8 +246,8 @@
         "all_found": true,
         "returned": 3,
         "symbol_recall": 1.0,
-        "seconds": 0.12,
-        "context_chars": 12818,
+        "seconds": 0.26,
+        "context_chars": 12815,
         "ranked": [
           "shopcart/inventory.py",
           "shopcart/models.py",
@@ -270,8 +270,8 @@
         "all_found": true,
         "returned": 3,
         "symbol_recall": 1.0,
-        "seconds": 0.41,
-        "context_chars": 12818,
+        "seconds": 0.74,
+        "context_chars": 12815,
         "ranked": [
           "shopcart/inventory.py",
           "shopcart/models.py",
@@ -306,7 +306,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.09,
+        "seconds": 0.17,
         "context_chars": 18046,
         "ranked": [
           "tests/test_checkout.py",
@@ -330,8 +330,8 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.3333333333333333,
-        "seconds": 0.12,
-        "context_chars": 21502,
+        "seconds": 0.33,
+        "context_chars": 21496,
         "ranked": [
           "shopcart/payments/gateway.py",
           "shopcart/inventory.py",
@@ -356,8 +356,8 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.3333333333333333,
-        "seconds": 0.41,
-        "context_chars": 21502,
+        "seconds": 0.83,
+        "context_chars": 21496,
         "ranked": [
           "shopcart/payments/gateway.py",
           "shopcart/inventory.py",
@@ -395,7 +395,7 @@
         "all_found": false,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.09,
+        "seconds": 0.22,
         "context_chars": 18150,
         "ranked": [
           "shopcart/checkout.py",
@@ -419,8 +419,8 @@
         "all_found": false,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.12,
-        "context_chars": 19719,
+        "seconds": 0.3,
+        "context_chars": 19713,
         "ranked": [
           "shopcart/payments/gateway.py",
           "shopcart/inventory.py",
@@ -432,7 +432,7 @@
         "reasons": {
           "shopcart/utils/money.py": [
             "defines `format_money` (mentioned in issue)",
-            "lexical match on binar, exactl, format_mone, whole, half, place (BM25 0.75)",
+            "lexical match on exactl, binar, whole, format_mone, place, half (BM25 0.75)",
             "imported by shopcart/checkout.py"
           ]
         }
@@ -445,8 +445,8 @@
         "all_found": false,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.41,
-        "context_chars": 19719,
+        "seconds": 0.75,
+        "context_chars": 19713,
         "ranked": [
           "shopcart/payments/gateway.py",
           "shopcart/inventory.py",
@@ -458,7 +458,7 @@
         "reasons": {
           "shopcart/utils/money.py": [
             "defines `format_money` (mentioned in issue)",
-            "lexical match on binar, exactl, format_mone, whole, half, place (BM25 0.75)",
+            "lexical match on exactl, binar, whole, format_mone, place, half (BM25 0.75)",
             "n-gram vector similarity 0.13 (local-ngram-768) via `from_cents`"
           ]
         }
@@ -482,7 +482,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.09,
+        "seconds": 0.17,
         "context_chars": 18112,
         "ranked": [
           "shopcart/checkout.py",
@@ -506,8 +506,8 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 1.0,
-        "seconds": 0.12,
-        "context_chars": 20632,
+        "seconds": 0.3,
+        "context_chars": 20626,
         "ranked": [
           "shopcart/payments/gateway.py",
           "shopcart/discounts.py",
@@ -532,8 +532,8 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 1.0,
-        "seconds": 0.44,
-        "context_chars": 20632,
+        "seconds": 0.78,
+        "context_chars": 20626,
         "ranked": [
           "shopcart/discounts.py",
           "shopcart/payments/gateway.py",
@@ -568,7 +568,7 @@
         "all_found": false,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.09,
+        "seconds": 0.2,
         "context_chars": 17896,
         "ranked": [
           "shopcart/checkout.py",
@@ -588,8 +588,8 @@
         "all_found": false,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.14,
-        "context_chars": 20675,
+        "seconds": 0.3,
+        "context_chars": 20669,
         "ranked": [
           "shopcart/discounts.py",
           "shopcart/payments/gateway.py",
@@ -608,8 +608,8 @@
         "all_found": false,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.41,
-        "context_chars": 20675,
+        "seconds": 0.62,
+        "context_chars": 20669,
         "ranked": [
           "shopcart/discounts.py",
           "shopcart/payments/gateway.py",
@@ -638,7 +638,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.09,
+        "seconds": 0.16,
         "context_chars": 15432,
         "ranked": [
           "shopcart/checkout.py",
@@ -662,8 +662,8 @@
         "all_found": true,
         "returned": 2,
         "symbol_recall": 0.0,
-        "seconds": 0.12,
-        "context_chars": 9783,
+        "seconds": 0.27,
+        "context_chars": 9789,
         "ranked": [
           "shopcart/auth/permissions.py",
           "shopcart/checkout.py"
@@ -685,8 +685,8 @@
         "all_found": true,
         "returned": 3,
         "symbol_recall": 0.0,
-        "seconds": 0.42,
-        "context_chars": 10126,
+        "seconds": 0.89,
+        "context_chars": 10137,
         "ranked": [
           "shopcart/auth/permissions.py",
           "shopcart/checkout.py",
@@ -743,8 +743,8 @@
         "all_found": true,
         "returned": 1,
         "symbol_recall": 1.0,
-        "seconds": 0.09,
-        "context_chars": 5570,
+        "seconds": 0.14,
+        "context_chars": 5568,
         "ranked": [
           "taskq/schedule.py"
         ],
@@ -753,7 +753,7 @@
           "taskq/schedule.py": [
             "file named in the issue text",
             "defines `parse_interval` (mentioned in issue)",
-            "lexical match on sec, hour, parse_interval, interval, parse, schedule (BM25 0.96)"
+            "lexical match on sec, hour, parse_interval, parse, interval, schedule (BM25 0.96)"
           ]
         }
       },
@@ -765,8 +765,8 @@
         "all_found": true,
         "returned": 1,
         "symbol_recall": 1.0,
-        "seconds": 0.27,
-        "context_chars": 5600,
+        "seconds": 0.45,
+        "context_chars": 5598,
         "ranked": [
           "taskq/schedule.py"
         ],
@@ -775,7 +775,7 @@
           "taskq/schedule.py": [
             "file named in the issue text",
             "defines `parse_interval` (mentioned in issue)",
-            "lexical match on sec, hour, parse_interval, interval, parse, schedule (BM25 0.96)"
+            "lexical match on sec, hour, parse_interval, parse, interval, schedule (BM25 0.96)"
           ]
         }
       }
@@ -797,7 +797,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.06,
+        "seconds": 0.08,
         "context_chars": 12408,
         "ranked": [
           "taskq/retry.py",
@@ -821,8 +821,8 @@
         "all_found": true,
         "returned": 1,
         "symbol_recall": 1.0,
-        "seconds": 0.08,
-        "context_chars": 3602,
+        "seconds": 0.14,
+        "context_chars": 3599,
         "ranked": [
           "taskq/retry.py"
         ],
@@ -843,8 +843,8 @@
         "all_found": true,
         "returned": 1,
         "symbol_recall": 0.0,
-        "seconds": 0.27,
-        "context_chars": 3629,
+        "seconds": 0.42,
+        "context_chars": 3626,
         "ranked": [
           "taskq/retry.py"
         ],
@@ -875,7 +875,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.05,
+        "seconds": 0.09,
         "context_chars": 14148,
         "ranked": [
           "taskq/api.py",
@@ -899,8 +899,8 @@
         "all_found": true,
         "returned": 4,
         "symbol_recall": 1.0,
-        "seconds": 0.09,
-        "context_chars": 12742,
+        "seconds": 0.12,
+        "context_chars": 12738,
         "ranked": [
           "taskq/task.py",
           "taskq/api.py",
@@ -924,8 +924,8 @@
         "all_found": true,
         "returned": 4,
         "symbol_recall": 1.0,
-        "seconds": 0.27,
-        "context_chars": 12756,
+        "seconds": 0.36,
+        "context_chars": 12752,
         "ranked": [
           "taskq/task.py",
           "taskq/api.py",
@@ -960,7 +960,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.06,
+        "seconds": 0.12,
         "context_chars": 13258,
         "ranked": [
           "taskq/config.py",
@@ -984,8 +984,8 @@
         "all_found": true,
         "returned": 4,
         "symbol_recall": 0.5,
-        "seconds": 0.09,
-        "context_chars": 13849,
+        "seconds": 0.17,
+        "context_chars": 13851,
         "ranked": [
           "taskq/retry.py",
           "taskq/config.py",
@@ -997,7 +997,7 @@
           "taskq/config.py": [
             "file named in the issue text",
             "defines `load_config` (mentioned in issue)",
-            "lexical match on copy, anyth, sett, overrid, toml, configur (BM25 1.00)"
+            "lexical match on copy, anyth, overrid, toml, configur, sett (BM25 1.00)"
           ]
         }
       },
@@ -1009,8 +1009,8 @@
         "all_found": true,
         "returned": 3,
         "symbol_recall": 0.5,
-        "seconds": 0.28,
-        "context_chars": 12138,
+        "seconds": 0.41,
+        "context_chars": 12139,
         "ranked": [
           "taskq/retry.py",
           "taskq/config.py",
@@ -1021,7 +1021,7 @@
           "taskq/config.py": [
             "file named in the issue text",
             "defines `load_config` (mentioned in issue)",
-            "lexical match on copy, anyth, sett, overrid, toml, configur (BM25 1.00)"
+            "lexical match on copy, anyth, overrid, toml, configur, sett (BM25 1.00)"
           ]
         }
       }
@@ -1043,7 +1043,7 @@
         "all_found": false,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.06,
+        "seconds": 0.08,
         "context_chars": 15050,
         "ranked": [
           "README.md",
@@ -1063,8 +1063,8 @@
         "all_found": true,
         "returned": 4,
         "symbol_recall": 1.0,
-        "seconds": 0.09,
-        "context_chars": 15391,
+        "seconds": 0.12,
+        "context_chars": 15386,
         "ranked": [
           "taskq/api.py",
           "taskq/worker.py",
@@ -1074,7 +1074,7 @@
         "error": null,
         "reasons": {
           "taskq/queue.py": [
-            "lexical match on equal, order, high, first, priorit, queue (BM25 0.48)",
+            "lexical match on equal, high, order, first, priorit, queue (BM25 0.48)",
             "`TaskService.submit` (taskq/api.py) uses `TaskQueue.push` defined here",
             "`Worker.run_pending` (taskq/worker.py) uses `TaskQueue.pop` defined here"
           ]
@@ -1088,8 +1088,8 @@
         "all_found": true,
         "returned": 4,
         "symbol_recall": 1.0,
-        "seconds": 0.3,
-        "context_chars": 15430,
+        "seconds": 0.34,
+        "context_chars": 15425,
         "ranked": [
           "taskq/api.py",
           "taskq/worker.py",
@@ -1099,7 +1099,7 @@
         "error": null,
         "reasons": {
           "taskq/queue.py": [
-            "lexical match on equal, order, high, first, priorit, queue (BM25 0.48)",
+            "lexical match on equal, high, order, first, priorit, queue (BM25 0.48)",
             "`TaskService.submit` (taskq/api.py) uses `TaskQueue.push` defined here",
             "`Worker.run_pending` (taskq/worker.py) uses `TaskQueue.pop` defined here"
           ]
@@ -1123,7 +1123,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.06,
+        "seconds": 0.08,
         "context_chars": 15853,
         "ranked": [
           "taskq/worker.py",
@@ -1147,8 +1147,8 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.09,
-        "context_chars": 18507,
+        "seconds": 0.17,
+        "context_chars": 18505,
         "ranked": [
           "taskq/api.py",
           "taskq/worker.py",
@@ -1173,8 +1173,8 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.28,
-        "context_chars": 18532,
+        "seconds": 0.42,
+        "context_chars": 18530,
         "ranked": [
           "taskq/api.py",
           "taskq/worker.py",
@@ -1209,7 +1209,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.06,
+        "seconds": 0.09,
         "context_chars": 8233,
         "ranked": [
           "tests/test_slug.py",
@@ -1233,8 +1233,8 @@
         "all_found": true,
         "returned": 4,
         "symbol_recall": 1.0,
-        "seconds": 0.08,
-        "context_chars": 8279,
+        "seconds": 0.11,
+        "context_chars": 8274,
         "ranked": [
           "textkit/slug.py",
           "textkit/normalize.py",
@@ -1258,8 +1258,8 @@
         "all_found": true,
         "returned": 4,
         "symbol_recall": 1.0,
-        "seconds": 0.24,
-        "context_chars": 8290,
+        "seconds": 0.3,
+        "context_chars": 8285,
         "ranked": [
           "textkit/slug.py",
           "textkit/normalize.py",
@@ -1293,7 +1293,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.06,
+        "seconds": 0.11,
         "context_chars": 8306,
         "ranked": [
           "tests/test_truncate_regression.py",
@@ -1317,8 +1317,8 @@
         "all_found": true,
         "returned": 2,
         "symbol_recall": 1.0,
-        "seconds": 0.11,
-        "context_chars": 5804,
+        "seconds": 0.12,
+        "context_chars": 5805,
         "ranked": [
           "textkit/truncation.py",
           "textkit/cli.py"
@@ -1327,7 +1327,7 @@
         "reasons": {
           "textkit/truncation.py": [
             "defines `truncate` (mentioned in issue)",
-            "lexical match on ellipsi, cut, preview, limit, charact, long (BM25 0.52)",
+            "lexical match on cut, preview, ellipsi, charact, limit, long (BM25 0.52)",
             "`test_truncate_result_fits_in_limit` (tests/test_truncate_regression.py) uses `truncate` defined here"
           ]
         }
@@ -1340,8 +1340,8 @@
         "all_found": true,
         "returned": 1,
         "symbol_recall": 1.0,
-        "seconds": 0.25,
-        "context_chars": 2182,
+        "seconds": 0.3,
+        "context_chars": 2184,
         "ranked": [
           "textkit/truncation.py"
         ],
@@ -1349,7 +1349,7 @@
         "reasons": {
           "textkit/truncation.py": [
             "defines `truncate` (mentioned in issue)",
-            "lexical match on ellipsi, cut, preview, limit, charact, long (BM25 0.52)",
+            "lexical match on cut, preview, ellipsi, charact, limit, long (BM25 0.52)",
             "n-gram vector similarity 0.14 (local-ngram-768) via `truncate_middle`"
           ]
         }
@@ -1372,7 +1372,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.06,
+        "seconds": 0.11,
         "context_chars": 9156,
         "ranked": [
           "textkit/cli.py",
@@ -1396,7 +1396,7 @@
         "all_found": true,
         "returned": 3,
         "symbol_recall": 1.0,
-        "seconds": 0.08,
+        "seconds": 0.16,
         "context_chars": 8086,
         "ranked": [
           "textkit/case.py",
@@ -1407,7 +1407,7 @@
         "reasons": {
           "textkit/case.py": [
             "defines `title_case` (mentioned in issue)",
-            "lexical match on last, stay, capitalis, headline, title, title_case (BM25 1.00)",
+            "lexical match on last, capitalis, stay, headline, lowercase, title_case (BM25 1.00)",
             "`test_title_case_custom_small_words` (tests/test_case.py) uses `title_case` defined here"
           ]
         }
@@ -1420,7 +1420,7 @@
         "all_found": true,
         "returned": 3,
         "symbol_recall": 1.0,
-        "seconds": 0.22,
+        "seconds": 0.45,
         "context_chars": 8124,
         "ranked": [
           "textkit/case.py",
@@ -1431,7 +1431,7 @@
         "reasons": {
           "textkit/case.py": [
             "defines `title_case` (mentioned in issue)",
-            "lexical match on last, stay, capitalis, headline, title, title_case (BM25 1.00)",
+            "lexical match on last, capitalis, stay, headline, lowercase, title_case (BM25 1.00)",
             "n-gram vector similarity 0.18 (local-ngram-768) via `title_case`"
           ]
         }
@@ -1456,7 +1456,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.06,
+        "seconds": 0.08,
         "context_chars": 9123,
         "ranked": [
           "textkit/template.py",
@@ -1480,8 +1480,8 @@
         "all_found": true,
         "returned": 2,
         "symbol_recall": 1.0,
-        "seconds": 0.08,
-        "context_chars": 3970,
+        "seconds": 0.11,
+        "context_chars": 3964,
         "ranked": [
           "textkit/template.py",
           "textkit/errors.py"
@@ -1503,8 +1503,8 @@
         "all_found": true,
         "returned": 2,
         "symbol_recall": 1.0,
-        "seconds": 0.22,
-        "context_chars": 4015,
+        "seconds": 0.28,
+        "context_chars": 4009,
         "ranked": [
           "textkit/template.py",
           "textkit/errors.py"
@@ -1536,7 +1536,7 @@
         "all_found": false,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.06,
+        "seconds": 0.09,
         "context_chars": 9251,
         "ranked": [
           "textkit/cli.py",
@@ -1556,8 +1556,8 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 1.0,
-        "seconds": 0.08,
-        "context_chars": 10889,
+        "seconds": 0.11,
+        "context_chars": 10883,
         "ranked": [
           "textkit/stats.py",
           "textkit/tokenize.py",
@@ -1582,8 +1582,8 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 1.0,
-        "seconds": 0.22,
-        "context_chars": 10968,
+        "seconds": 0.3,
+        "context_chars": 10962,
         "ranked": [
           "textkit/stats.py",
           "textkit/tokenize.py",
@@ -1618,7 +1618,7 @@
         "all_found": true,
         "returned": 5,
         "symbol_recall": 0.0,
-        "seconds": 0.06,
+        "seconds": 0.08,
         "context_chars": 9417,
         "ranked": [
           "tests/test_csvio.py",
@@ -1642,8 +1642,8 @@
         "all_found": true,
         "returned": 2,
         "symbol_recall": 1.0,
-        "seconds": 0.08,
-        "context_chars": 4289,
+        "seconds": 0.11,
+        "context_chars": 4288,
         "ranked": [
           "textkit/csvio.py",
           "textkit/errors.py"
@@ -1665,8 +1665,8 @@
         "all_found": true,
         "returned": 2,
         "symbol_recall": 1.0,
-        "seconds": 0.22,
-        "context_chars": 4326,
+        "seconds": 0.28,
+        "context_chars": 4325,
         "ranked": [
           "textkit/csvio.py",
           "textkit/errors.py"

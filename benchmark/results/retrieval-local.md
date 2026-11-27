@@ -12,7 +12,8 @@
 | recall@5_medium | 0.57 | 0.86 | 0.86 |
 | recall@5_hard | 0.88 | 0.88 | 0.88 |
 | mean_files_returned | 5.00 | 3.25 | 3.20 |
-| mean_context_chars | 13924 | 11453 | 11224 |
+| mean_context_chars | 13924 | 11450 | 11221 |
+| errors | 0 | 0 | 0 |
 
 ## Misses (expected file not in top-n)
 
