@@ -229,7 +229,36 @@ def _final_panel(result: PipelineResult, dry_run: bool) -> None:
 
 @main.group("runs")
 def runs_group() -> None:
-    """Inspect structured run history (~/.fix-issue/runs)."""
+    """Inspect structured run history (~/.fix-issue/runs, or a benchmark's runs directory)."""
+
+
+_RUNS_DIR_HELP = ("Read run records from this directory instead of FIX_ISSUE_HOME/runs "
+                  "(e.g. benchmark/results/runs/<results-stem>).")
+
+
+def _runs_dir(path: str | None) -> Path | None:
+    return Path(path) if path else None
+
+
+def _load_run_any(run_id: str, runs_dir_opt: str | None) -> dict[str, Any]:
+    """Load a run from --runs-dir, else FIX_ISSUE_HOME/runs, else any benchmark runs directory."""
+    from fix_issue.run_history import load_run
+
+    if runs_dir_opt:
+        return load_run(run_id, Path(runs_dir_opt))
+    try:
+        return load_run(run_id)
+    except FileNotFoundError as first:
+        from fix_issue.bench.cases import DEFAULT_BENCH_DIR
+
+        bench_runs = DEFAULT_BENCH_DIR / "results" / "runs"
+        for d in sorted((p for p in bench_runs.glob("*") if p.is_dir()), reverse=True):
+            try:
+                return load_run(run_id, d)
+            except FileNotFoundError as exc:
+                if not str(exc).startswith("No run matching"):
+                    raise
+        raise first
 
 
 @runs_group.command("list")
@@ -237,10 +266,12 @@ def runs_group() -> None:
 @click.option("--repo", default=None)
 @click.option("--result", "result_filter", default=None)
 @click.option("--json", "as_json", is_flag=True)
-def runs_list(limit: int, repo: str | None, result_filter: str | None, as_json: bool) -> None:
+@click.option("--runs-dir", "runs_dir_opt", default=None, help=_RUNS_DIR_HELP)
+def runs_list(limit: int, repo: str | None, result_filter: str | None, as_json: bool,
+              runs_dir_opt: str | None) -> None:
     from fix_issue.run_history import list_runs, summarize
 
-    rows = [summarize(r) for r in list_runs()]
+    rows = [summarize(r) for r in list_runs(_runs_dir(runs_dir_opt))]
     if repo:
         rows = [r for r in rows if r["repo"] == repo]
     if result_filter:
@@ -268,11 +299,11 @@ _SECTIONS = ("issue", "triage", "controls", "similar_issues", "tooling", "baseli
 @click.argument("run_id")
 @click.option("--section", type=click.Choice(_SECTIONS), default=None, help="Print one section as JSON.")
 @click.option("--json", "as_json", is_flag=True, help="Print the whole record as JSON.")
-def runs_show(run_id: str, section: str | None, as_json: bool) -> None:
-    from fix_issue.run_history import load_run
-
+@click.option("--runs-dir", "runs_dir_opt", default=None, help=_RUNS_DIR_HELP)
+def runs_show(run_id: str, section: str | None, as_json: bool, runs_dir_opt: str | None) -> None:
+    """Show one run (searches benchmark run directories too when not found in FIX_ISSUE_HOME)."""
     try:
-        rec = load_run(run_id)
+        rec = _load_run_any(run_id, runs_dir_opt)
     except FileNotFoundError as exc:
         console.print(f"[red]{exc}[/]")
         sys.exit(1)
@@ -340,12 +371,13 @@ def _print_run(rec: dict[str, Any]) -> None:
 
 
 @runs_group.command("stats")
-def runs_stats() -> None:
+@click.option("--runs-dir", "runs_dir_opt", default=None, help=_RUNS_DIR_HELP)
+def runs_stats(runs_dir_opt: str | None) -> None:
     from collections import Counter
 
     from fix_issue.run_history import list_runs, summarize
 
-    rows = [summarize(r) for r in list_runs()]
+    rows = [summarize(r) for r in list_runs(_runs_dir(runs_dir_opt))]
     if not rows:
         console.print("No runs recorded yet.")
         return
@@ -365,12 +397,23 @@ def runs_stats() -> None:
 
 @main.command("rerun")
 @click.argument("run_id")
+@click.option("--runs-dir", "runs_dir_opt", default=None, help=_RUNS_DIR_HELP)
 @_common
-def rerun_cmd(run_id: str, dry_run: bool, config_path: str | None, **ov: Any) -> None:
-    """Re-run a recorded run (same issue, same recorded parameters) with optional overrides."""
-    from fix_issue.run_history import load_run
+def rerun_cmd(run_id: str, dry_run: bool, config_path: str | None, runs_dir_opt: str | None, **ov: Any) -> None:
+    """Re-run a recorded run (same issue, same recorded parameters) with optional overrides.
 
-    rec = load_run(run_id)
+    Benchmark runs are found in benchmark/results/runs/* automatically and, without --config,
+    re-run with benchmark/bench.toml (not ~/.fix-issue.toml).
+    """
+    try:
+        rec = _load_run_any(run_id, runs_dir_opt)
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/]")
+        sys.exit(1)
+    if config_path is None and (rec.get("source") or {}).get("type") == "bench":
+        from fix_issue.bench.cases import DEFAULT_BENCH_DIR
+
+        config_path = str(DEFAULT_BENCH_DIR / "bench.toml")
     cfg = _load_cfg(config_path)
     p = rec.get("params") or {}
     cfg.pipeline.profile = p.get("profile", cfg.pipeline.profile)
