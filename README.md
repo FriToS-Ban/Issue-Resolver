@@ -42,7 +42,8 @@ There are two pipelines in the code:
 fetch issue ─► similar resolved issues ─► triage (+ control signals)
                                               │ needs_info / out_of_scope / duplicate → comment, stop
                                               ▼
-clone ─► discover tests + linters ─► BASELINE test run ─► layered retrieval ─► plan (+1 investigation round)
+clone ─► pin the scope policy (base commit) ─► discover tests + linters ─► BASELINE test run
+      ─► layered retrieval ─► plan (+1 investigation round)
                                               │
           attempts ≤ max_retries (triage may lower it; review rounds add attempts)
    ┌── for each plan step (or one edit round):
@@ -51,10 +52,12 @@ clone ─► discover tests + linters ─► BASELINE test run ─► layered re
    ├── tests (compared with the baseline run) + the repo's linters/type checkers (new findings only)
    │      any failure → recovery analysis from the current file state → next attempt
    │                    (plan revised when the evidence contradicts it)
+   ├── scope guard again on the real working tree (test or linter code may have changed files)
    └── independent review + deterministic gates
           NEEDS_REVISION → another round (bounded) │ REJECTED → comment, stop
                                               ▼
-commit ─► push fix-issue-<N> ─► PR (draft when the verdict is HUMAN_REVIEW) ─► run record
+tree still equal to the reviewed diff ─► commit on the base commit ─► push fix-issue-<N>
+      ─► PR (draft when the verdict is HUMAN_REVIEW) ─► run record
 ```
 
 The pipeline lives in `fix_issue/orchestrator.py`. Where issues come from and where output goes
@@ -73,7 +76,10 @@ evidence. A "duplicate" verdict is kept only when a listed issue reaches
 `[pipeline] duplicate_threshold` for the scorer that produced its similarity (local n-gram and API
 embedding scores are on different scales, so the defaults in `fix_issue/config.py` are per
 scorer); otherwise it is downgraded to `fixable` (or `needs_info` when the report has no
-reproduction) with confidence capped at 0.5.
+reproduction) with confidence capped at 0.5. When the embedding API refuses the issue or a
+candidate, the affected comparisons are scored with local vectors instead and recorded as such. The
+defaults were chosen for zero false positives on a labelled set, which keeps recall low (see
+[Security and limitations](#security-and-limitations)).
 
 ### 2. Triage and control signals
 
@@ -101,12 +107,42 @@ identified), `out_of_scope` stops without a comment.
 
 ### 3. Workspace, tooling, baseline
 
-The repository is cloned into a temporary directory that is always removed. The test command is
-detected from the repository (pytest configuration, `setup.py` + `tests/`, a `package.json`
-`test` script, a Makefile `test` target, `tox.ini`, `go.mod`, or a `tests/` directory with
-`test_*.py`). The repository's configured linters and type checkers are discovered (see step 8).
-The tests are run once before any change, so failures that already existed are not blamed on the
-patch.
+The repository is cloned (`--depth=1`) into a temporary directory, and the branch `fix-issue-<N>`
+is created at the default branch's HEAD, which is the base commit for the rest of the run. The
+directory is removed at the end, also when the clone fails, including git's read-only object
+files (which a plain `shutil.rmtree` leaves behind on Windows).
+
+Two things happen before any repository code runs:
+
+- The scope policy (`.fix-issue-scope.toml` and `.fix-issue-ignore`) is read from the base commit
+  with `git cat-file` and pinned for the whole run (see [step 7](#7-scope-guard)).
+- The git control files are snapshotted: `.git/config`, and `config.worktree` / `commondir` if
+  they exist.
+
+The repository's tests and linters, and any `conftest.py` the model writes, run in the working
+tree before fix-issue diffs, commits and pushes, so they could plant hooks or git config that git
+would then execute. Every git command the workspace runs (diff, reset, commit, push) and the
+validators' base-commit worktree commands are therefore hardened (the scope guard reads the policy
+with a plain `git cat-file --batch`, which runs no hooks; in the full profile that happens before
+any repository code runs):
+
+- `-c core.hooksPath=<an empty directory fix-issue owns>`, so no hook runs, and `--no-verify` on
+  commit and push; `-c core.fsmonitor=false`; `-c gc.auto=0` and `-c maintenance.auto=false`.
+- Before each git command `.git/config` is restored byte for byte from the snapshot, so planted
+  `filter.*`, `diff.*.textconv`, `core.sshCommand`, `url.*.insteadOf` or `include.path` entries
+  never take effect. A planted `commondir` or `config.worktree` is removed. If `.git` itself was
+  replaced (by a link, a file or another directory), the command is refused.
+- git gets the allowlisted environment that repository code gets (step 8), plus the proxy,
+  CA-bundle, author/committer and `GIT_CONFIG_GLOBAL` / `GIT_CONFIG_SYSTEM` /
+  `GIT_CONFIG_NOSYSTEM` variables from your environment, and a timeout (300 s per command, 900 s
+  for the clone, 600 s for the push) after which its process tree is killed.
+- Diffs use `--no-ext-diff --no-textconv`.
+
+The test command is detected from the repository (pytest configuration, `setup.py` + `tests/`, a
+`package.json` `test` script, a Makefile `test` target, `tox.ini`, `go.mod`, or a `tests/`
+directory with `test_*.py`). The repository's configured linters and type checkers are discovered
+(see step 8). The tests are run once before any change, so failures that already existed are not
+blamed on the patch.
 
 ### 4. Layered retrieval
 
@@ -130,7 +166,9 @@ carries the reasons it was chosen, which are shown during the run and stored in 
 Large files are rendered as an outline plus the full text of the relevant symbols, within
 `[pipeline] max_context_chars`. Embeddings are pluggable: local n-gram vectors (default, offline,
 not a semantic model), any OpenAI-compatible `/embeddings` endpoint, or none. API vectors are
-cached on disk.
+cached on disk; inputs the endpoint refuses (for example NIM's HTTP 422 content screening) get no
+vector instead of switching embeddings off for the whole repository. The index skips symlinks,
+and every file read checks that the resolved path stays inside the clone.
 
 ### 5. Plan and one investigation round
 
@@ -161,9 +199,19 @@ occurrences, and `CANNOT_FIX: <reason>` declines. `editing.py` parses this toler
 fences, `<think>` preambles, decorated paths) and applies a whole batch in memory before anything
 is written: exact match first, then trailing-whitespace- or indentation-tolerant matching only
 when that match is unique; ambiguous matches and wrong occurrence counts are errors; edits that
-are already present are recognised; every changed Python/JSON/TOML file must still parse; paths
-must stay inside the repository; original line endings are preserved. When the plan is decomposed,
-each step is a separate edit round against the files as they are after the previous step.
+are already present are recognised (only when the REPLACE text sits where the SEARCH text best
+matches); every changed Python/JSON/TOML file must still parse; original line endings are
+preserved. When the answer also contains edits, it is a decline only if a `CANNOT_FIX:` marker
+line comes before the first `FILE:` line; prose such as "Cannot fix X, so..." in the INTENT does
+not count. When the plan is decomposed, each step is a separate edit round against the files as
+they are after the previous step.
+
+Paths are checked before anything is read or written. Absolute paths, `..`, components ending in
+`.` or a space, Windows 8.3 short names (`GIT~1`), `:` (NTFS alternate data streams), and control
+or invisible Unicode format characters are refused, because on Windows or macOS they can alias
+another name (`.git./hooks/pre-push` is `.git/hooks/pre-push` on NTFS). The path is then resolved
+(symlinks, letter case, short names), and a target outside the repository or under `.git` is
+refused. Reads, writes and scope checks use that canonical repo-relative path.
 
 Every failure (provider error, bad format, SEARCH text not found, ambiguous match, syntax error,
 scope block, test failure or regression, new lint finding, reviewer revision request) is turned
@@ -175,28 +223,67 @@ The next attempt edits forward from the current state. When the evidence contrad
 
 ### 7. Scope guard
 
-`scope_guard.evaluate` checks the prospective cumulative diff before it is written and classifies
-every touched path. Each concern is a finding with a severity: **block** (the patch is not
-proposed), **review** (allowed, but the PR goes to human review) or **info** (recorded only).
+`scope_guard.evaluate` classifies every path a diff touches. Each concern is a finding with a
+severity: **block** (the patch is not proposed), **review** (allowed, but the PR goes to human
+review) or **info** (recorded only). In the full profile it is applied at three points:
+
+1. on the prospective cumulative diff of each edit round, before anything is written;
+2. after the tests and linters ran, on the working tree as it really is (`git diff` against the
+   base commit), because test or linter code may have created or changed files (a workflow,
+   `.gitattributes`, a symlink). A violation fails the attempt like any other failure. This check
+   is enforced even with `--no-critique`;
+3. right before committing: the working tree must still equal the diff that was validated and
+   reviewed, otherwise nothing is committed and the run ends as `scope_violation`.
 
 | Category | Default patterns | Outcome |
 |---|---|---|
-| ignored | `.fix-issue-ignore` in the target repo | block |
-| secrets | `.env`, `.env.*`, `*.pem`, `*.key`, `**/secrets/**`, `*credentials*` | block |
-| ci | `.github/workflows/**`, `.gitlab-ci.yml`, `.circleci/**`, `Jenkinsfile` | block |
+| unsafe_path | a path component that is `.git` (any case), ends in `.` or a space, looks like an 8.3 short name (`GIT~1`), contains `:` or is `..`, or contains control or invisible Unicode format characters | block (hard-coded, repo rules cannot change it) |
+| policy | `.fix-issue-scope.toml`, `.fix-issue-ignore` (at any level) | block (hard-coded) |
+| ignored | patterns in `.fix-issue-ignore` (see below) | block |
+| secrets | `.env`, `.env.*`, `*.pem`, `*.key`, `**/secrets/**`, `*credentials*`, `.npmrc`, `.pypirc`, `.netrc`, `_netrc`, `.git-credentials`, `.yarnrc`, `.yarnrc.yml`, `pip.conf`, `pip.ini` | block |
+| ci | everything under `.github/` (workflows, actions, `CODEOWNERS`, dependabot, issue forms), `.gitlab-ci.yml`, `.gitlab/**`, `.circleci/**`, `Jenkinsfile`, `.travis.yml`, `azure-pipelines.yml`/`.yaml`, `.azure-pipelines/**`, `bitbucket-pipelines.yml`, `.drone.yml`, `.buildkite/**`, `appveyor.yml`, `.appveyor.yml`, `.pre-commit-config.yaml`, `.pre-commit-hooks.yaml`, `CODEOWNERS` | block |
+| git_metadata | `.gitattributes`, `.gitmodules` | block |
 | lockfile | `poetry.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Pipfile.lock`, `uv.lock`, `Cargo.lock`, `go.sum` | block |
-| migrations | `**/migrations/**`, `**/alembic/**`, `**/*migration*` | new file: review; changing an existing one: block |
-| auth | `**/auth/**`, `**/*auth*.py`, `**/permission*`, `**/oauth/**`, `**/security/**`, `**/login*` | review; more than 20 changed lines: block |
-| payments | `**/payment*/**`, `**/payment*`, `**/billing/**`, `**/stripe/**`, `**/invoice*` | review; more than 20 changed lines: block |
-| public API | removed public function/class/method, changed parameter list, changed `__all__` or package exports (Python) | review |
+| migrations | `**/migrations/**`, `**/alembic/**`, `**/*migration*` | new file: review; modifying, deleting or renaming an existing one: block |
+| tests | `tests/**`, `**/tests/**`, `test_*.py`, `*_test.py`, `conftest.py`, `**/__tests__/**`, `*.spec.*`, `*.test.*` | info; size weight 0.5 |
+| docs | `docs/**`, `*.md`, `*.rst` | info; size weight 0.25 |
+| auth | `**/auth/**`, `**/*auth*.py`, `**/permission*`, `**/oauth/**`, `**/security/**`, `**/login*` | review; more than 20 changed lines in the category: block |
+| payments | `**/payment*/**`, `**/payment*`, `**/billing/**`, `**/stripe/**`, `**/invoice*` | review; more than 20 changed lines in the category: block |
+| build | `setup.py`, `setup.cfg`, `pyproject.toml`, `tox.ini`, `noxfile.py`, `Makefile`, `GNUmakefile`, `package.json`, `MANIFEST.in`, `requirements*.txt`, `Pipfile`, `Dockerfile`, `CMakeLists.txt`, `Cargo.toml`, `go.mod`, `Gemfile`, `*.gemspec`, `pom.xml`, `build.gradle`, `build.gradle.kts` | review |
+| public API | removed public function/class/method, changed parameter list, changed `__all__` or package exports (non-test Python) | review |
 | deletion / rename | deleted or renamed files | review |
 | binary | binary patches | block |
-| size | weighted changed lines (tests ×0.5, docs ×0.25, source ×1.0) over the limit | block |
-| triage forbidden | path matches a triage-suggested forbidden glob | block |
+| special_file | a symlink (mode 120000) or submodule (mode 160000) entry in the diff | block |
+| size | weighted changed lines (tests ×0.5, docs ×0.25, everything else ×1.0) over the limit | block |
+| size (characters) | weighted changed characters over limit × 200, so one very long line cannot pass a line budget | block |
+| triage forbidden | path matches a triage-suggested forbidden glob (test files exempt) | block |
 | triage allowed | path outside the triage-suggested allowed paths (tests/docs exempt) | review |
+| config | a problem in `.fix-issue-scope.toml`: info; the policy could not be read from the base commit: review | info / review |
+
+`unsafe_path` and `policy` are decided first. The path rules from `secrets` to `build` are then
+tried in the order of the table and the first match decides a path's category, so
+`tests/test_auth.py` is a test, a key file under `tests/` is still a secret, and
+`tests/fixtures/package.json` is a test file, not a build file. `.fix-issue-ignore` is checked on
+every path regardless of its category. Patterns are gitignore-like and case-insensitive: a pattern without `/`
+matches any single path component, a pattern with `/` is anchored at the repository root, and a
+pattern that matches a directory matches everything below it.
+
+Triage only saw the issue text, while the implementer is asked to add a regression test, so
+triage-suggested forbidden globs (for example `tests/**`) do not apply to test files. Every other
+rule, `.fix-issue-ignore` and the hard-coded blocks still apply to them.
+
+**Where the policy comes from.** The agent must not be able to change the rules that judge it.
+Both policy files are read from the base commit when the workspace is created, before any
+repository or model code runs, and that snapshot is used for every check in the run (the baseline
+profile's legacy check reads them from the base commit on each check); the copies in the working
+tree are never trusted. Only `.fix-issue-ignore` patterns found in the working tree
+are added on top, since they can only make the policy stricter. If the files cannot be read from
+the base commit, the repository rules are not applied and the run gets a review finding.
 
 The size limit is `min(max_diff_lines, triage diff budget)`. A target repository can add its own
-rules in `.fix-issue-scope.toml`; they are tried before the defaults:
+rules in `.fix-issue-scope.toml`; they are tried before the defaults, so a repository can also
+re-classify its own paths (but not the hard-coded `unsafe_path` and `policy` categories), and
+`.fix-issue-ignore` and triage constraints always apply on top:
 
 ```toml
 [[rule]]
@@ -223,11 +310,48 @@ are compared without line numbers so a pre-existing warning that moved does not 
 | mypy | `[tool.mypy]`, `mypy.ini`, `.mypy.ini`, `[mypy]` in `setup.cfg` |
 | pyright | `pyrightconfig.json`, `[tool.pyright]` |
 | black | `[tool.black]` |
-| eslint, tsc | eslint config files / `tsconfig.json` (from `node_modules/.bin`) |
+| eslint, tsc | eslint config files / `tsconfig.json`; run with `node` from `node_modules/eslint/bin/eslint.js` / `node_modules/typescript/bin/tsc` |
 | go vet | `go.mod` |
 | npm/make/tox lint scripts | only with `[validation] allow_project_scripts = true` |
 
 A tool that cannot run is recorded as skipped with a reason; it never fails validation.
+
+**Tests that already failed before the patch.** When the suite fails but every failing test was
+already failing in the baseline run (and the run did not time out), the attempt counts as failed
+once: the next attempt gets feedback saying there are no new failures, listing the pre-existing
+ones, and asking the model to make them pass if they reproduce the issue or to keep the fix
+otherwise. If a later attempt again leaves only pre-existing failures, the change goes on to
+the linters and the review instead of failing; gate G2 caps the verdict at `HUMAN_REVIEW`
+([step 9](#9-independent-review-with-deterministic-gates)). Without the review such a change is
+published only as a draft. Any new failure is still a normal test failure.
+
+**How repository code is run.** Tests, linters and type checkers execute code from the target
+repository, so every such command goes through `sandbox.run_command`:
+
+- The environment is an allowlist: executable lookup and OS directories, temp, home and per-user
+  profile directories, locale and terminal settings, TLS trust-store paths, and a fixed set of
+  Python, Node, Go, Rust and Java variables. Everything else (GitHub and LLM tokens, database
+  URLs, webhooks, agent sockets, CI tokens, registry credentials) is dropped. Variables named in
+  `FIX_ISSUE_ENV_PASSTHROUGH` (names separated by commas, spaces or semicolons, for example
+  `DATABASE_URL,JAVA_OPTS`) are passed through from your environment. `PYTHONDONTWRITEBYTECODE=1`,
+  `CI=1` and `GIT_TERMINAL_PROMPT=0` are always set. `HOME` is not redirected.
+- Commands are argument lists, never a shell, and run inside the clone.
+- Timeouts are wall-clock (`[limits] test_timeout_seconds` for the test suite, 120 s per linter
+  run). The child runs in a Windows Job object (created suspended, kill-on-close) or in its own
+  POSIX session; on timeout, and again after a normal exit, the whole process tree is killed, so a
+  grandchild cannot outlive the command. If no Job object can be created on Windows,
+  `taskkill /T /F` is used. Output goes to temporary files, not pipes, so a grandchild holding the
+  stream cannot keep fix-issue waiting.
+- cmd.exe re-parses the arguments of `.cmd` and `.bat` programs. A `.bat`/`.cmd` command whose
+  arguments contain anything cmd.exe could interpret is refused, and the validators never pass the
+  changed (model-chosen) file names to a `.cmd`/`.bat` tool at all: eslint and tsc run through
+  `node` (on POSIX the `node_modules/.bin` script is a fallback; the Windows `.cmd` shims are never
+  used), and a per-file tool that resolves to a batch file is skipped with that reason.
+- Python linters and type checkers run as `python -P -m <tool>`, so a module planted in the
+  repository cannot shadow the tool.
+
+This limits what repository code can reach, but it is not isolation; see
+[Security and limitations](#security-and-limitations).
 
 ### 9. Independent review with deterministic gates
 
@@ -244,7 +368,7 @@ The verdict then passes through gates that can only make it more conservative:
 | Gate | Condition | Verdict at most |
 |---|---|---|
 | G1 | tests did not run | HUMAN_REVIEW |
-| G2 | tests failed | NEEDS_REVISION |
+| G2 | tests failed | NEEDS_REVISION; HUMAN_REVIEW when the only failures are tests that already failed before the patch |
 | G3 | scope requires human review | HUMAN_REVIEW |
 | G4 | scope blocked | REJECTED |
 | G5 | new linter/type-checker findings | NEEDS_REVISION |
@@ -255,16 +379,44 @@ The verdict then passes through gates that can only make it more conservative:
 
 `NEEDS_REVISION` sends the reviewer's required changes back as feedback for another round (up to
 `[pipeline] max_critique_rounds`, each adding one attempt); when that budget is used up the verdict
-becomes `HUMAN_REVIEW`. `REJECTED` posts the reviewer summary on the issue and opens no PR. If the
-reviewer call fails, the verdict is `HUMAN_REVIEW`.
+becomes `HUMAN_REVIEW`. The candidate that was sent for review is kept: if the revision attempts
+then fail (edits that do not apply, failing tests, a scope block), the working tree is reset, that
+reviewed candidate is re-applied and published with the verdict `HUMAN_REVIEW` (a draft PR), and
+the run record notes the fallback. If it cannot be re-applied, the run ends as it would have
+without it (`failed` or `scope_violation`). A `CANNOT_FIX` answer during the revision still ends
+the run as `cannot_fix`, and a `REJECTED` verdict on the revision still rejects.
+`REJECTED` posts the reviewer summary on the issue and opens no PR. If the reviewer call fails, the
+verdict is `HUMAN_REVIEW`.
 
 ### 10. Pull request
 
-The fix is committed and force-pushed to the branch `fix-issue-<N>`, and a PR is opened against the
-default branch (if a PR from that branch is already open, its URL is returned). When the verdict is
-`HUMAN_REVIEW` the PR is opened as a draft with a warning banner. The body has these sections:
-Root Cause, Fix Summary, Changes, Confidence Score, Files Modified, Why This Should Work, Validation
-Executed, Independent Review (verdict and gates), Scope Notes, Remaining Limitations.
+Before committing, the working tree is diffed once more and must be exactly the diff that was
+validated and reviewed (see step 7); otherwise nothing is committed. The commit is made with
+`--no-verify` directly on the base commit: the fix branch is reset to the base SHA before staging,
+whatever repository code did to `HEAD` or the branch in the meantime. Exactly that commit SHA is
+force-pushed to `refs/heads/fix-issue-<N>` at the explicit URL `https://github.com/<owner>/<repo>.git`
+(with `--no-verify` and `--recurse-submodules=no`), so a remote or URL rewrite planted in the
+repository's config cannot redirect it.
+
+The token is never put in a URL or in `.git/config`. Clone and push authenticate with a
+per-command `-c http.https://github.com/.extraheader=AUTHORIZATION: basic <base64>`, together with
+`-c credential.helper=` (a rejected token fails instead of falling back to the GitHub credentials
+stored on your machine) and `-c http.sslVerify=true`. The header is on the git process's command
+line for the duration of that command. Errors from git have the token removed, in plain and base64
+form.
+
+A PR is then opened against the default branch (if a PR from that branch is already open, its URL
+is returned). When the verdict is `HUMAN_REVIEW` the PR is opened as a draft with a warning banner.
+The body has these sections: Root Cause, Fix Summary, Changes, Confidence Score, Files Modified,
+Why This Should Work, Validation Executed, Independent Review (verdict and gates), Scope Notes,
+Remaining Limitations.
+
+Model-written text in the body (root cause, summary, reasons, reviewer summary, gates, scope notes,
+limitations) passes through `redaction.neutralize()`: configured keys and tokens and common
+credential shapes are redacted, `@mentions` are broken with a zero-width space so nobody is
+pinged, closing keywords followed by an issue reference (`fixes #12`) are broken the same way so
+they cannot close or link other issues, and each field is length-capped. The `Resolves #<N>` line
+for the issue being fixed is added outside that text.
 
 The confidence score is a fixed formula, and the PR shows each term:
 
@@ -285,24 +437,36 @@ score = max(1, score)
 | `pr_opened` | PR opened (possibly as a draft) | the PR |
 | `dry_run` | everything ran, nothing was pushed | nothing; the PR title, body and diff are printed |
 | `needs_info` | triage needs more information | clarifying question |
-| `duplicate` | duplicate backed by similarity evidence | pointer to the original |
+| `duplicate` | duplicate backed by similarity evidence | pointer to the original (when one is identified) |
 | `out_of_scope` | not something to fix automatically | nothing |
 | `cannot_fix` | the model declined | nothing |
-| `scope_violation` | the last attempt was blocked by the scope guard | explanation |
-| `rejected` | the independent review rejected the patch | reviewer summary |
-| `failed` | attempts exhausted | last failure category and message |
-| `error` | the pipeline stopped on an LLM, configuration or file-system error (recorded in the run) | nothing |
+| `scope_violation` | the last attempt was blocked by the scope guard, or the working tree changed after review | the scope guard's blocking reasons and the run id (nothing when the tree changed after review) |
+| `rejected` | the independent review rejected the patch | reviewer summary and required changes |
+| `failed` | attempts exhausted | the last failure category, a fixed one-line description of it and the run id |
+| `error` | the pipeline stopped on an exception of any kind (LLM, configuration, git, GitHub API, file system) | nothing |
+
+Public comments never contain raw test or tool output or error messages: that text can include
+local paths, file contents printed by repository code, provider errors or credentials. The
+failure comment names the category and points to the local run record
+(`fix-issue runs show <run-id>`).
+Model-written text that does appear in comments (the clarifying question, the duplicate reason,
+the reviewer summary and required changes, the scope reasons) goes through the same
+`neutralize()` as the PR body. An `error` outcome keeps the redacted message and traceback in the
+run record instead of ending in an unrecorded traceback.
 
 `fix-issue owner/repo N` exits 0 for `pr_opened`, `dry_run`, `needs_info`, `out_of_scope` and
 `duplicate`, and 1 otherwise.
 
 Every run writes a JSON record to `~/.fix-issue/runs/<run-id>.json` (root configurable with
 `FIX_ISSUE_HOME`), updated after each stage: parameters, issue, triage and control signals,
-similar issues, tooling, baseline tests, retrieval with reasons, every plan version, every attempt
-(intent, edits, diff, scope report, tests, linters, failure analysis), every review round with its
-gates, a per-call LLM log (purpose, sizes, latency, truncated prompt tail and response) and the
-outcome. `fix-issue runs` reads these, and `fix-issue rerun` repeats a run with the recorded
-parameters. A one-line summary per GitHub run is also still appended to `~/.fix-issue-runs.jsonl` (`FIX_ISSUE_HOME/runs.jsonl` when `FIX_ISSUE_HOME` is set).
+similar issues, where the scope policy was read from, tooling, baseline tests, retrieval with
+reasons (and the initial retrieval before any planner-requested expansion), every plan version,
+every attempt (intent, edits, diff, scope report, tests, linters, failure analysis), every review
+round with its gates, a per-call LLM log (purpose, sizes, latency, the last 6000 characters of the
+prompt and the first 6000 of the response) and the outcome. `fix-issue runs` reads these, and
+`fix-issue rerun` repeats a run with the recorded parameters. A one-line summary per GitHub run is
+also still appended to `~/.fix-issue-runs.jsonl` (`FIX_ISSUE_HOME/runs.jsonl` when
+`FIX_ISSUE_HOME` is set).
 
 ---
 
@@ -337,8 +501,10 @@ Settings are read in this order (later overrides earlier):
 1. defaults in `fix_issue/config.py`
 2. `~/.fix-issue.toml`, or the file given with `--config` (`fix-issue bench run` uses
    `benchmark/bench.toml` unless you pass `--config`)
-3. environment variables, including a `.env` file in the current working directory (a `.env`
-   value never replaces a variable that is already set in the real environment)
+3. environment variables, including a `.env` file in the current working directory. Only
+   `FIX_ISSUE_*`, `LLM_*`, `NVIDIA_API_KEY` and `GITHUB_TOKEN` lines are loaded from `.env`; any
+   other variable in it (`PATH`, `GIT_*`, proxies, ...) is ignored, and a `.env` value never
+   replaces a variable that is already set in the real environment
 4. command-line options
 
 Start from the templates:
@@ -354,11 +520,24 @@ commented out in `.env`.
 ### API keys
 
 - `LLM_API_KEY` sets the `[llm]` key for any provider.
-- `NVIDIA_API_KEY` is used as the `[llm]` key automatically when the `[llm]` base URL contains
-  `nvidia.com` and `LLM_API_KEY` is not set at all.
-- The critic and API embeddings fall back to the `[llm]` key, so one NIM key covers all three. If
-  the critic or the embeddings use a different provider than `[llm]`, set `[critic] api_key` or
-  `[retrieval] embedding_api_key`.
+- `NVIDIA_API_KEY` is used as the `[llm]` key when `LLM_API_KEY` is not set at all and the `[llm]`
+  base URL is an `https` URL whose host is `nvidia.com` or a subdomain of it.
+  `https://integrate.api.nvidia.com/v1` qualifies; `http://...` URLs and look-alike hosts such as
+  `integrate.api.nvidia.com.example.org` do not.
+- When the critic or the API embeddings have no key of their own, they get the `[llm]` key only
+  if their base URL has the same host as `[llm] base_url`; an
+  endpoint on `nvidia.com` (same rule as above) can use `NVIDIA_API_KEY`; otherwise no key is
+  sent. With the NIM setup below one key covers all three.
+- `[critic] base_url` falls back to `[llm] base_url` when empty. So a critic with a different
+  `provider` (`anthropic` or `gemini`, which ignore `base_url`) and no `api_key` of its own counts
+  as the same host and gets the `[llm]` key, which is then sent to that provider. Set
+  `[critic] api_key` whenever the critic uses a different provider.
+- The Gemini key is sent in the `x-goog-api-key` header, not in the URL.
+- Every configured key and token is registered when the configuration is loaded. Provider errors,
+  recorded LLM errors and `error` outcomes go through `redaction.redact()`, which removes those
+  values (also in their base64 basic-auth form) and common credential shapes (GitHub tokens,
+  `nvapi-`, `sk-` and `AIza` keys, bearer/basic headers, `key=`/`token=` query parameters,
+  credentials in URLs). This is a safety net, not a guarantee.
 - `GITHUB_TOKEN` (or `[github] token`) is needed for real runs, not for the benchmark.
 
 ### Working NVIDIA NIM setup
@@ -435,9 +614,10 @@ model    = "gemini-2.5-pro"
 | `relevant_files` | 5 | files given to the model (a minimum in the full profile, exact in baseline) |
 | `test_timeout_seconds` | 300 | per test-suite run |
 
-`[critic]`: `provider`, `api_key`, `base_url`, `model`. Each empty value falls back to `[llm]`. A
-separate reviewer is built only when `model` or `provider` is set (or `--critic-model` is given);
-otherwise the implementer model reviews with the separate reviewer prompt.
+`[critic]`: `provider`, `api_key`, `base_url`, `model`. An empty `provider`, `base_url` or
+`model` falls back to `[llm]`; for `api_key` see [API keys](#api-keys). A separate reviewer is
+built only when `model` or `provider` is set (or `--critic-model` is given); otherwise the
+implementer model reviews with the separate reviewer prompt.
 
 `[pipeline]`
 
@@ -458,8 +638,8 @@ otherwise the implementer model reviews with the separate reviewer prompt.
 | `embedding_backend` | `local` | `local` (offline n-gram vectors), `openai_compatible`, or `none` |
 | `embedding_model` | empty | required for `openai_compatible` |
 | `embedding_base_url` | `[llm] base_url` | `/embeddings` endpoint base |
-| `embedding_api_key` | `[llm] api_key` | |
-| `cache_dir` | `~/.fix-issue/cache` | embedding cache for the pipeline |
+| `embedding_api_key` | empty | when empty, the `[llm]` key only for the same host, see [API keys](#api-keys) |
+| `cache_dir` | `~/.fix-issue/cache` | embedding cache for the pipeline and for `bench retrieval --config` |
 
 If the API embedder is misconfigured, the pipeline records why and falls back to local vectors.
 
@@ -471,19 +651,20 @@ If the API embedder is misconfigured, the pipeline records why and falls back to
 | `run_type_checkers` | `true` | run configured type checkers |
 | `run_formatters` | `true` | run configured formatter checks |
 | `allow_project_scripts` | `false` | allow `npm run lint`, `make lint`, `tox -e lint` (arbitrary repository code) |
-| `sandbox_prefix` | `[]` | argv prefix wrapped around test and linter commands, e.g. a `docker run ...` invocation; untested, see [limitations](#security-and-limitations) |
+| `sandbox_prefix` | `[]` | argv prefix wrapped around the full profile's test and linter commands, e.g. a `docker run ...` invocation; untested and not applied everywhere, see [limitations](#security-and-limitations) |
 
 ### Environment variables
 
 | Variable | Overrides |
 |---|---|
 | `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` | `[llm]` |
-| `NVIDIA_API_KEY` | `[llm] api_key`, only for an `nvidia.com` base URL and when `LLM_API_KEY` is unset |
+| `NVIDIA_API_KEY` | `[llm] api_key`, only for an `https` base URL on `nvidia.com` or a subdomain and when `LLM_API_KEY` is unset; also the key for a critic or embedding endpoint on such a host that has no key of its own |
 | `GITHUB_TOKEN` | `[github] token` |
 | `FIX_ISSUE_MAX_DIFF_LINES`, `FIX_ISSUE_MAX_RETRIES` | `[limits]` |
 | `FIX_ISSUE_PROFILE` | `[pipeline] profile` |
 | `FIX_ISSUE_EMBEDDING_BACKEND` | `[retrieval] embedding_backend` |
-| `FIX_ISSUE_HOME` | root for `runs/` and `cache/` (default `~/.fix-issue`) |
+| `FIX_ISSUE_HOME` | root for `runs/` and `cache/` (default `~/.fix-issue`); when set, the one-line summary log is `FIX_ISSUE_HOME/runs.jsonl` instead of `~/.fix-issue-runs.jsonl` |
+| `FIX_ISSUE_ENV_PASSTHROUGH` | not a setting: names of extra variables (separated by commas, spaces or semicolons) passed from your environment to repository code and git, which otherwise get only the allowlist described in [step 8](#8-tests-and-diff-aware-linters) |
 
 Environment variables also override `benchmark/bench.toml`, so unset `LLM_*` and `FIX_ISSUE_*`
 variables before a benchmark run you want to compare. Set `FIX_ISSUE_HOME` in the real
@@ -497,6 +678,10 @@ These live in the target repository, so the rules are visible to anyone reviewin
 - `.fix-issue-ignore`: glob patterns (fnmatch, on the full path or the file name) the agent must
   never modify. A match blocks the patch. See `.fix-issue-ignore.example`.
 - `.fix-issue-scope.toml`: extra scope rules, see [Scope guard](#7-scope-guard).
+
+Both are read from the base commit, and the agent can never edit either of them.
+`.fix-issue-scope.toml` is never read from the working tree. Patterns from a `.fix-issue-ignore`
+in the working tree are added to the base commit's, because they can only add restrictions.
 
 ---
 
@@ -522,7 +707,7 @@ fix-issue resolve owner/repo 123 [options]      # same, explicit
 | `--model NAME` | implementer model |
 | `--critic-model NAME` | reviewer model (other `[critic]` fields still apply) |
 | `--no-plan` | skip planning |
-| `--no-critique` | skip the independent review (no gates, so no draft PRs either) |
+| `--no-critique` | skip the independent review (no gates; the PR is a draft only when tests that failed before the patch still fail) |
 | `--embedding-backend local\|openai_compatible\|none` | retrieval embeddings |
 | `--temperature X` | sampling temperature |
 
@@ -531,23 +716,32 @@ fix-issue resolve owner/repo 123 [options]      # same, explicit
 ### Run history
 
 ```bash
-fix-issue runs list [--limit 20] [--repo owner/repo] [--result pr_opened] [--json]
-fix-issue runs show <run-id> [--section retrieval] [--json]
-fix-issue runs stats
-fix-issue rerun <run-id> [options]
+fix-issue runs list [--limit 20] [--repo owner/repo] [--result pr_opened] [--json] [--runs-dir DIR]
+fix-issue runs show <run-id> [--section retrieval] [--json] [--runs-dir DIR]
+fix-issue runs stats [--runs-dir DIR]
+fix-issue rerun <run-id> [--runs-dir DIR] [options]
 ```
 
+- Run records are read from `FIX_ISSUE_HOME/runs` (default `~/.fix-issue/runs`). `--runs-dir`
+  reads another directory instead, for example a benchmark run's
+  `benchmark/results/runs/<results-name>/`.
 - `runs list` shows id, start time, repo, issue, profile, classification, files retrieved,
   attempts, verdict, result and duration.
 - `runs show` prints a readable summary of everything a run did and why. `--section` prints one
   part as JSON: `issue`, `triage`, `controls`, `similar_issues`, `tooling`, `baseline`,
   `retrieval`, `plans`, `attempts`, `critiques`, `pr`, `llm`, `outcome`, `events`, `params`.
-  `--json` prints the whole record. A unique part of the run id is enough.
+  `--json` prints the whole record. A unique part of the run id is enough. Without `--runs-dir`,
+  a run that is not in `FIX_ISSUE_HOME/runs` is also searched for in every
+  `benchmark/results/runs/*/` directory.
 - `runs stats` counts results and review verdicts and shows the mean number of attempts.
-- `rerun` takes the same options as `resolve`. It restores the recorded profile, model,
-  temperature, critic model, `[limits]` and `[pipeline]` values, then applies your options.
-  Provider, keys, retrieval and validation settings come from your current configuration. A run
-  that was recorded as a dry run is repeated as a dry run.
+- `rerun` takes the same options as `resolve` and finds runs the same way as `runs show`. It
+  restores the recorded profile, model, temperature, critic model, `[limits]` and `[pipeline]`
+  values, then applies your options. Provider, keys, retrieval and validation settings come from
+  the current configuration. A run that was recorded as a dry run is repeated as a dry run.
+- A benchmark run is re-run through the benchmark harness on a fresh copy of its case (always a
+  dry run, graded, the result printed as JSON, the new run record written to
+  `FIX_ISSUE_HOME/runs`). Without `--config` it uses `benchmark/bench.toml`, not
+  `~/.fix-issue.toml`.
 
 ### Benchmark commands
 
@@ -575,13 +769,14 @@ See [Benchmark](#benchmark) for what each one does.
 | Retrieval | layered (`fix_issue/retrieval/`) | keyword scoring (`file_selector.py`), top `relevant_files` |
 | Planning | plan + one investigation round | none |
 | Editing | step-wise SEARCH/REPLACE batches, validated before writing | `patch_generator.py` produces one unified diff, applied with `git apply` (then `--3way`) |
-| Scope | `scope_guard.evaluate` on the cumulative diff, before writing | `scope_guard.check`: `.fix-issue-ignore` + raw line count; a violation ends the run |
+| Scope | `scope_guard.evaluate` with the pinned policy: before writing, again on the real tree after tests and linters, and a tree-equals-reviewed-diff check before committing | `scope_guard.check` before applying the diff: unsafe (alias) paths and the policy files, `.fix-issue-ignore` from the base commit, raw line count; a violation ends the run |
 | Linters / type checkers | diff-aware | none |
 | Retries | categorised recovery from the current file state, plan revision | error text appended to the next prompt; tree reset after a test failure |
 | Review | independent critique + gates | none |
 | PR | structured explanation; draft on HUMAN_REVIEW | original body; never a draft |
 | Comments on failure | `failed`, `scope_violation`, `rejected` | none |
 | `sandbox_prefix` | applied to tests and linters | not applied |
+| git hardening, environment allowlist, timeouts | yes | yes (same `GitWorkspace` and `sandbox.run_command`) |
 
 The baseline is kept so that the benchmark measures the effect of the rebuild against the same
 models and cases, not against a strawman.
@@ -602,6 +797,8 @@ benchmark/
   cases/<id>/case.toml        one issue + the bug to inject + ground truth
   cases/<id>/hidden_tests/    tests that check the issue itself is fixed
   results/                    results JSON + Markdown (per-case run records under results/runs/, gitignored)
+  results/diagnostic/         two earlier runs made before the fixes on this branch, kept as evidence
+                              for those fixes; not the reported result (see its README.md)
 ```
 
 **Fixtures.** Three small Python packages: `shopcart` (cart, checkout, discounts, inventory, an
@@ -636,6 +833,14 @@ posting, always as a dry run. The harness then re-runs the visible suite on the 
 tree, runs the hidden tests, checks the real diff against the case's forbidden paths and size cap
 (the cap applies to non-test lines; regression tests the agent adds are counted separately),
 checks retrieval against the expected files, and derives a failure category from the run record.
+Retrieval is scored as recall@5 on the initial retrieval (before any planner-requested
+expansion), so both profiles are measured on their first five files; cases where triage stopped
+the run before retrieval have no recall value instead of 0. Grading runs git with hooks and
+fsmonitor off, an allowlisted environment and a timeout (the `.git/config` restore is not applied
+there, because the workspace has already been closed), runs pytest through the same runner as the
+pipeline (allowlisted environment, process-tree kill, output decoded as UTF-8 with replacement),
+and deletes the temporary case repository afterwards.
+
 A fix case counts as a success only when the classification is correct, a patch is present, the
 visible suite passes, the hidden tests pass, scope is respected and the pipeline finished with a
 deliverable patch. A triage case succeeds when the classification is correct and no patch was
@@ -676,14 +881,19 @@ fix-issue bench report benchmark/results/full-<stamp>.json
 - `--cases` takes case ids, difficulty names or fixture names and can be repeated.
 - `bench run` writes `benchmark/results/<profile>-<stamp>.json` (or `--out`) after every case, a
   Markdown summary next to it, and the full run record of every case to
-  `benchmark/results/runs/<results-name>/`. `--parallel` sets how many cases run at once. Those
-  run records are not in `~/.fix-issue/runs`, so `fix-issue runs show` and `fix-issue rerun` do
-  not find them; open the JSON files directly.
+  `benchmark/results/runs/<results-name>/`. `--parallel` sets how many cases run at once.
+  `fix-issue runs show <run-id>` and `fix-issue rerun <run-id>` find those records automatically;
+  `runs list` and `runs stats` need `--runs-dir benchmark/results/runs/<results-name>`.
+- `bench retrieval --config` uses that file's `[retrieval] cache_dir` for the embedding cache when
+  it is set.
 - `bench review` walks through fix cases that need a human look (cases marked
   `requires_manual_review`, and cases where the visible and hidden tests disagree; `--all` for every
   fix case), shows the automated grades and the diff, and stores verdicts in
-  `<results>.manual.json`. `bench report` applies them (they override "issue fixed" for those cases)
-  and counts reviews still pending.
+  `<results>.manual.json`. `bench report` applies them: a `correct` or `incorrect` verdict on a fix
+  case overrides "issue fixed", and success, first-attempt success, "tests pass but not fixed" and
+  the failure category are re-derived from it, with the same conditions as automated success (so
+  a run that ended in `error` stays a failure whatever the verdict). The automated values are kept as
+  `issue_fixed_automated` and `failure_category_automated`. Reviews still pending are counted.
 
 ### Results
 
@@ -717,41 +927,109 @@ and `shopcart-h2` (`shopcart/pricing.py` with layered retrieval; keyword retriev
 
 ## Security and limitations
 
-What is done to limit risk:
+fix-issue runs the target repository's tests and linters on your machine, and those execute code
+from the repository, including test code the model may have written. The measures below make that
+harder to abuse. They are not isolation.
 
-- The GitHub token is used in the clone URL only for the clone itself; the remote URL is then
-  rewritten without it, and the push authenticates with a one-shot `http.extraheader`, so code run
-  by the repository's test suite cannot read the token from `.git/config`.
-- Commands that run repository code (tests, linters) get an environment with secret-looking
-  variables removed (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*API_KEY*`, `*_KEY`, `AWS_*`, `AZURE_*`,
-  `GCP_*`, `GOOGLE_*`, ...), run as argument lists without a shell, have hard timeouts, and run
-  inside the throwaway clone.
-- Python linters and type checkers run as `python -P -m <tool>` so a module planted in the
-  repository cannot shadow them; the base-commit worktree is created with hooks disabled; project
-  lint scripts are opt-in.
-- In the full profile, CI configuration, lock files and secrets files are never edited, and
-  changes to auth and payment code are limited to 20 lines and, with the review enabled, end as
-  `HUMAN_REVIEW` (draft PR). The baseline profile only enforces `.fix-issue-ignore` and the size
-  limit.
-- No PR is merged automatically. A PR is a draft whenever the review verdict is `HUMAN_REVIEW`.
+What is defended:
 
-What is not solved:
+- **git cannot be turned against the run.** Every git command on the workspace runs with hooks
+  disabled (`core.hooksPath` set to an empty directory fix-issue owns), `core.fsmonitor=false`, no
+  automatic gc or maintenance, an allowlisted environment and a timeout. `.git/config` is
+  restored from a snapshot taken before any repository code ran, before every git command, so
+  filters, textconv drivers, `core.sshCommand` or URL rewrites planted there have no effect; a planted
+  `commondir` / `config.worktree` is removed and a replaced `.git` aborts. Commit and push use
+  `--no-verify`, the commit is made directly on the base commit, and exactly that SHA is pushed to
+  an explicit URL ([step 3](#3-workspace-tooling-baseline), [step 10](#10-pull-request)).
+- **The GitHub token is kept away from repository code.** It is never in a URL, in `.git/config`
+  or in the environment of repository code. Clone and push authenticate with a per-command extra
+  header, with `credential.helper` reset so a rejected token cannot fall back to your stored
+  credentials. Git errors and tracebacks have it redacted. (Repository code can still read it from
+  any file you keep it in, see below.)
+- **Repository code gets a reduced environment and bounded run time**: an environment allowlist
+  (extendable with `FIX_ISSUE_ENV_PASSTHROUGH`), no shell, wall-clock timeouts with the whole
+  process tree killed (Windows Job object / POSIX session), output in temp files, `.cmd`/`.bat`
+  programs never run with model-influenced arguments, Python tools run as `python -P -m`, and
+  project lint scripts only with `allow_project_scripts` ([step 8](#8-tests-and-diff-aware-linters)).
+- **Edits stay in the repository.** Paths that could alias `.git` or another file on Windows or
+  macOS, `..`, absolute paths and targets that resolve outside the clone or under `.git` are
+  refused ([step 6](#6-structured-edits-and-recovery)). Retrieval never reads files outside the
+  clone, and recovery never reads refused or out-of-repo paths into the next prompt.
+- **The agent cannot loosen its own scope policy.** The policy is read from the base commit
+  before any repository or model code runs. The policy files themselves, everything under
+  `.github/`, other CI systems and pre-commit, credential files, `.gitattributes`/`.gitmodules`,
+  lock files, binary patches and symlink/submodule entries are blocked; build and packaging
+  manifests, auth and payment code, new migrations, deletions and public API changes need review.
+  The whole working tree is checked again after tests and linters ran, and must equal the reviewed
+  diff before anything is committed ([step 7](#7-scope-guard)).
+- **API keys are routed by host**: `NVIDIA_API_KEY` only to `https` hosts on `nvidia.com`, the
+  `[llm]` key to a critic or embedding endpoint only on the same host (with the critic caveat in
+  [API keys](#api-keys)); the Gemini key is sent in a header; `.env` can only set fix-issue's own
+  variables; configured secrets and common credential shapes are redacted from provider errors,
+  recorded LLM errors and `error` outcomes.
+- **Public text carries no raw output.** Comments and PR bodies never include raw test or tool
+  output or error messages; the model-written text they do include is neutralised (redaction, no
+  `@mentions`, no closing keywords for other issues, length caps).
+- **Every failure is recorded.** An exception of any type ends as a recorded, redacted `error`
+  outcome with the traceback in the run record.
+- No PR is merged automatically. A PR is a draft whenever the verdict is `HUMAN_REVIEW`.
+- The baseline profile uses the same git hardening and command runner, but its scope check only
+  covers alias paths, the policy files, `.fix-issue-ignore` and the size limit.
 
-- **No container isolation.** The repository's tests and linters execute arbitrary code from the
-  repository on your machine, with your user's file-system access. Secrets are stripped from the
-  environment and there are timeouts, but nothing more. `[validation] sandbox_prefix` exists to
-  wrap those commands (for example in `docker run ...`), but it is untested: commands use the host
-  interpreter path and the host working directory, so a wrapper has to make both valid inside the
-  container. It is not applied in the baseline profile or by the benchmark harness's own grading
-  runs. Only run fix-issue on repositories whose code you are willing to execute.
+What is not defended:
+
+- **No container isolation.** Repository code runs as your user, with your file-system and network
+  access. It can read files under your home directory: `~/.fix-issue.toml` (your API keys, if you
+  keep them there), `~/.git-credentials`, `~/.ssh/`, cloud credentials (`~/.aws/`,
+  `~/.config/gcloud/`, `~/.azure/`), registry tokens in `~/.npmrc` and so on, and it can send them
+  anywhere. It can edit your global or system git config, which fix-issue does not restore and
+  which affects your other repositories (fix-issue's own git commands only override the keys it
+  sets with `-c`). It can also escape the process-tree kill: on Windows by starting processes
+  outside the Job object (WMI, scheduled tasks, services), on POSIX by leaving the process group
+  (`setsid`, as in the usual daemon double fork).
+- **`sandbox_prefix` is not a working sandbox.** `[validation] sandbox_prefix` exists to wrap
+  commands in a container (for example `docker run ...`), but it is untested: commands use the
+  host interpreter path and the host working directory, so a wrapper has to make both valid inside
+  the container. It is applied only to the full profile's test and linter runs: not to the
+  baseline profile's tests, not to the validators' `--version` probes, not to git, and not to the
+  benchmark harness's grading runs. Only run fix-issue on repositories whose code you are willing
+  to execute.
+- **All git hooks are disabled**, including your own global hooks and git-lfs's `pre-push` hook.
+  A repository that depends on them (for example git-lfs uploads on push) does not get them.
+- **Pushing triggers CI before review.** The fix branch is pushed to the target repository itself,
+  not to a fork. Its `on: push` workflows then run the model-written change with whatever secrets
+  those workflows have, before anyone has looked at the PR. The scope guard keeps the agent out of
+  the workflow files, not out of the code they execute.
+- **`.env` is read from the current directory.** Do not run fix-issue inside an untrusted
+  checkout: a `.env` there could set `LLM_BASE_URL` (your `LLM_API_KEY` would then be sent to that
+  host), `FIX_ISSUE_ENV_PASSTHROUGH` (passing your variables to repository code) or
+  `FIX_ISSUE_HOME`.
+- **Run records contain private code.** Records under `FIX_ISSUE_HOME` (default
+  `~/.fix-issue/runs/`) keep diffs, test output tails and, for every LLM call, the last 6000
+  characters of the prompt and the first 6000 of the response, which include the repository's
+  source. They are written with default file permissions and never deleted by fix-issue.
+- **Redaction is a safety net.** It removes the configured secrets and common credential shapes,
+  not every secret a repository or a provider error might contain.
+- **Embeddings add no measurable retrieval gain on the benchmark repositories.** With the API
+  embedding model from `benchmark/bench.toml` (`nvidia/nemotron-3.5-embed-1b`), layered retrieval
+  has the same recall@1/3/5, MRR and symbol recall as without embeddings, and returns slightly
+  more context (`benchmark/results/retrieval-api.md`); the local n-gram vectors add nothing either
+  (see [Results](#results)). The repositories are small, so this says little about large ones.
+- **Duplicate detection has low recall by design.** The per-scorer thresholds are set for zero
+  false positives on a labelled calibration set (`tests/data/duplicate_pairs.json`, 30 hand-written
+  pairs, 15 of them duplicates). At those thresholds the local scorer finds 2 of the 15 duplicates
+  and the NIM embedding model 8 of 15; other API models use the uncalibrated 0.82. The benchmark's
+  duplicate case (`shopcart-h4`) scores below the NIM threshold and is expected to fail.
 - **The benchmark is small and Python-only.** Three fixture repositories with roughly 650 to 1,150
   lines of source each, 23 cases. Retrieval and validators support other languages, but nothing
   outside Python is measured, and results on large real-world repositories may differ.
 - **Triage `allowed_paths` do not block.** Triage only sees the issue text, so a change outside the
   paths it suggested produces a review finding (and so a `HUMAN_REVIEW` verdict and a draft PR),
   not a block. Triage `forbidden_paths` do block.
-- With `--no-critique` there is no verdict: the deterministic gates don't run and PRs are never
-  drafts.
+- With `--no-critique` there is no verdict and the deterministic gates don't run. The scope checks
+  still apply, but findings that only ask for review (auth, payments, build files, public API, ...)
+  no longer make the PR a draft; a PR is a draft only when tests that failed before the patch
+  still fail.
 - The branch `fix-issue-<N>` is force-pushed, so running the same issue again replaces the earlier
   branch contents.
 - Hidden tests are strong evidence that an issue is fixed, not proof. That is what `bench review`
@@ -769,24 +1047,25 @@ What is not solved:
 | `cli.py` | click entry point: `resolve` (default command), `runs`, `rerun`, `bench`; builds clients, renders progress and history |
 | `orchestrator.py` | the pipeline: both profiles, bounded loops, everything recorded; issue source, workspace and publisher are injected |
 | `adapters.py` | GitHub issue source and publisher for the orchestrator, plus a recording publisher for dry runs and the benchmark |
-| `config.py` | dataclasses for every TOML section, `.env` loading, environment overrides, `NVIDIA_API_KEY` fallback, validation, critic/embedding fallbacks, per-scorer duplicate thresholds |
+| `config.py` | dataclasses for every TOML section, filtered `.env` loading, environment overrides, exact-host `NVIDIA_API_KEY` matching, per-host key routing for the critic and embeddings, registering secrets for redaction, validation, per-scorer duplicate thresholds |
 | `github_client.py` | GitHub REST API over plain `requests` (issues, comments, contents, branches, PRs) |
-| `llm_provider.py` | provider-neutral LLM interface (Anthropic, OpenAI-compatible, Gemini) with bounded retries on 429/5xx/transport errors; `RecordingLLM` logs every call |
+| `llm_provider.py` | provider-neutral LLM interface (Anthropic, OpenAI-compatible, Gemini with the key in a header) with bounded retries on 429/5xx/transport errors and redacted errors; `RecordingLLM` logs every call |
+| `redaction.py` | `register_secret` / `redact`: removes configured keys and tokens (plain and base64) and common credential shapes from text; `neutralize`: `redact` plus broken `@mentions` and closing keywords and a length cap, for model text in comments and PR bodies |
 | `structured.py` | JSON extraction from LLM output and a small declarative schema validator, with one bounded repair round |
 | `triage.py` | structured triage, `derive_controls` (control signals that only tighten limits), duplicate-evidence check; legacy prompt for the baseline |
-| `duplicates.py` | similar-issue search against recently closed GitHub issues and past runs |
-| `repo_manager.py` | git workspaces: `GitWorkspace` (diff, reset, base content), `RepoManager` (temp clone of a GitHub repo, token-safe push), `LocalWorkspace` (benchmark); test-command detection; `git apply` with `--3way` fallback |
+| `duplicates.py` | similar-issue search against recently closed GitHub issues and past runs; records which scorer produced each score; scores inputs the embedding API refuses locally |
+| `repo_manager.py` | git workspaces: `GitWorkspace` (hardened git: no hooks, fsmonitor off, `.git/config` snapshot restored before every command, allowlisted env, timeouts, redacted `GitCommandError`; diff, reset, base content, commit on the base commit), `RepoManager` (temp clone of a GitHub repo with per-command auth, exact-SHA push to an explicit URL, cleanup also on failure), `LocalWorkspace` (benchmark); `git_command` / `git_env` for other modules; test-command detection; `git apply` with `--3way` fallback |
 | `planner.py` | schema-validated plans checked against the repository; `revise_plan`; retrieval-based fallback plan |
-| `editing.py` | SEARCH/REPLACE parser and atomic in-memory edit engine with tolerant-but-unique matching, syntax validation and `git apply`-compatible diffs |
-| `recovery.py` | failure categories and current-state feedback (exact error, fresh excerpts, partial changes, plan contradictions) |
-| `scope_guard.py` | `evaluate`: path- and severity-aware scope report; `check`: legacy all-or-nothing check used by the baseline |
-| `validators.py` | discovery of the repository's own linters/type checkers/formatters and diff-aware runs against a base-commit worktree |
-| `test_runner.py` | runs the test command, parses pytest failures and the summary line |
-| `sandbox.py` | secret-stripped environment, timeouts, no shell, optional `sandbox_prefix` |
-| `critic.py` | independent review prompt, structured answers, deterministic gates G1-G9 |
-| `pr_builder.py` | PR title and body, structured explanation sections, confidence formula, draft flag |
-| `run_history.py` | per-run JSON records under `~/.fix-issue/runs`, listing, loading and summaries |
-| `logger.py` | one-line JSON summary per run appended to `~/.fix-issue-runs.jsonl` (kept from v1) |
+| `editing.py` | SEARCH/REPLACE parser and atomic in-memory edit engine with tolerant-but-unique matching, path safety (canonical repo-relative paths; alias, `.git` and out-of-repo paths refused), syntax validation and `git apply`-compatible diffs |
+| `recovery.py` | failure categories and current-state feedback (exact error, fresh excerpts, partial changes, plan contradictions); never reads refused or out-of-repo paths |
+| `scope_guard.py` | `evaluate`: path- and severity-aware scope report (hard-coded `unsafe_path` and `policy` blocks, default and repo rules, line and character budgets, symlink/submodule entries, public API); `load_policy`: the policy as of the base commit; `check`: legacy all-or-nothing check used by the baseline |
+| `validators.py` | discovery of the repository's own linters/type checkers/formatters and diff-aware runs against a base-commit worktree; `.cmd`/`.bat` tools never receive file names |
+| `test_runner.py` | runs the test command through `sandbox.run_command`, parses pytest failures and the summary line |
+| `sandbox.py` | environment allowlist (plus `FIX_ISSUE_ENV_PASSTHROUGH`); `run_process` / `run_command`: no shell, output in temp files, wall-clock timeouts, process-tree kill (Windows Job object or `taskkill`, POSIX session); `.bat`/`.cmd` argument guard; optional `sandbox_prefix` |
+| `critic.py` | independent review prompt, structured answers, deterministic gates G1-G9 (G2 caps pre-existing failures at HUMAN_REVIEW) |
+| `pr_builder.py` | PR title and body, structured explanation sections with model text neutralised, confidence formula, draft flag |
+| `run_history.py` | per-run JSON records under `~/.fix-issue/runs` (or `FIX_ISSUE_HOME/runs`), listing, loading and summaries |
+| `logger.py` | one-line JSON summary per GitHub run appended to `~/.fix-issue-runs.jsonl`, or to `FIX_ISSUE_HOME/runs.jsonl` when `FIX_ISSUE_HOME` is set (kept from v1) |
 | `file_selector.py` | keyword file scoring (baseline profile; also the `keyword` variant of the retrieval benchmark) |
 | `patch_generator.py` | baseline profile patch generation: SEARCH/REPLACE blocks turned into one unified diff |
 
@@ -795,7 +1074,7 @@ What is not solved:
 | Module | Responsibility |
 |---|---|
 | `__init__.py` | public exports |
-| `index.py` | repository index: files, symbols with spans and signatures, imports, references (Python `ast`, regex for other languages) |
+| `index.py` | repository index: files, symbols with spans and signatures, imports, references (Python `ast`, regex for other languages); symlinks and paths resolving outside the root are skipped |
 | `mentions.py` | explicit evidence in the issue text: paths, stack frames, identifiers, exception types, resolved against the real file list |
 | `lexical.py` | BM25 over code-aware tokens |
 | `embeddings.py` | local n-gram embedder, OpenAI-compatible embedder, on-disk vector cache, `build_embedder` |
@@ -806,11 +1085,12 @@ What is not solved:
 
 | Module | Responsibility |
 |---|---|
+| `__init__.py` | package marker, so `fix_issue.bench` is included in a non-editable install (the cases and fixtures in `benchmark/` are still read from the source tree) |
 | `cases.py` | load and validate `case.toml`, copy fixtures, inject bugs, initialise the git repo, install hidden tests |
-| `validate.py` | `bench validate`: clean fixture passes, buggy baseline fails the hidden tests |
+| `validate.py` | `bench validate`: clean fixture passes, buggy baseline fails the hidden tests; `run_pytest` through the sandboxed runner |
 | `retrieval_eval.py` | `bench retrieval`: retrieval variants against ground-truth files and symbols |
-| `runner.py` | `bench run`: real orchestrator per case in a temp repo, independent grading, results JSON |
-| `report.py` | metrics, Markdown report, side-by-side comparison |
+| `runner.py` | `bench run`: real orchestrator per case in a temp repo (deleted afterwards), independent grading with hardened git and the sandboxed pytest runner (size cap on non-test lines, recall@5 on the initial retrieval), results JSON |
+| `report.py` | metrics, Markdown report, side-by-side comparison; applies manual verdicts and re-derives the fields that depend on them |
 | `manual.py` | human verdicts stored next to a results file |
 
 ---
@@ -826,16 +1106,25 @@ pytest
 |---|---|
 | `tests/test_triage.py` | triage parsing and validation, control signals, duplicate evidence |
 | `tests/test_duplicates.py` | similar-issue ranking and candidate sources |
-| `tests/test_retrieval.py` | mentions, index, layered retrieval, embeddings cache |
-| `tests/test_editing.py` | edit parsing, matching rules, atomic batches, line endings, diffs |
-| `tests/test_scope_guard.py` | scope categories, severities, repo rules, public API detection, legacy check |
-| `tests/test_validators.py` | tool discovery, output parsers, new-finding comparison, worktree cleanup |
-| `tests/test_pipeline_components.py` | structured output, planner, critic gates, run recorder, PR explanation, benchmark metrics, `.env` / `NVIDIA_API_KEY` |
+| `tests/test_duplicate_calibration.py` | duplicate thresholds against the labelled pairs in `tests/data/duplicate_pairs.json` (no false positives, the threshold rule), per-scorer threshold lookup, local scoring of inputs the API refuses; the NIM check is opt-in |
+| `tests/test_retrieval.py` | mentions, index, layered retrieval, embeddings cache, symlinks and out-of-clone paths, no phantom last line in rendered context |
 | `tests/test_embeddings_api.py` | API embedder handling of refused/blank inputs, cache robustness |
-| `tests/test_bench_grading.py` | benchmark grading on a real fixture with hand-written trees (no LLM) |
+| `tests/test_editing.py` | edit parsing, matching rules, atomic batches, line endings, diffs, alias/`.git`/symlink path safety, `CANNOT_FIX` and "already applied" rules |
+| `tests/test_scope_guard.py` | scope categories and severities, repo rules, policy read from the base commit, alias paths and policy files, character budget, symlink/submodule entries, triage globs vs test files, public API detection, legacy check |
+| `tests/test_validators.py` | tool discovery, output parsers, new-finding comparison, worktree cleanup, `.cmd`/`.bat` handling, hooks and config planted by repository code ignored in the baseline worktree |
+| `tests/test_sandbox.py` | environment allowlist, wall-clock timeouts that kill grandchildren, no stragglers after a normal exit, output capture, the `.bat`/`.cmd` guard |
+| `tests/test_repo_manager.py` | git hardening against planted hooks, config, `commondir` and a swapped `.git`; commit on the base; per-command auth; token redaction on clone and push failures (each attack is also fired with plain git to show it is live) |
+| `tests/test_config_security.py` | NVIDIA host matching, key routing for critic and embeddings, `.env` filtering, TOML boolean strings, redaction, Gemini key in a header |
+| `tests/test_pipeline_components.py` | structured output, planner, critic gates (including G2 for pre-existing failures), recovery, run recorder, PR explanation, benchmark metrics, `.env` / `NVIDIA_API_KEY` |
 | `tests/test_orchestrator.py` | the whole pipeline (both profiles) on a benchmark fixture, driven by a scripted test double instead of an LLM |
+| `tests/test_bench_grading.py` | benchmark grading on a real fixture with hand-written trees (no LLM): size cap on non-test lines, manual verdicts and re-derived fields, non-ASCII pytest output |
+| `tests/test_cli_runs.py` | `runs list` / `runs show` with `--runs-dir`, a missing run exits non-zero |
 | `tests/test_file_selector.py` | keyword scoring (baseline) |
 | `tests/test_confidence_score.py` | confidence formula and PR body |
+
+At the time of writing the suite gives 504 passed, 1 skipped. The skipped test scores the
+calibration set with NVIDIA NIM; it needs the network and a key and runs only with
+`FIX_ISSUE_NIM_TESTS=1`.
 
 The orchestrator tests check the plumbing (recovery, review rounds, scope blocks, triage
 short-circuits), not how well a real model fixes issues; that is what `fix-issue bench run`
@@ -845,9 +1134,15 @@ measures.
 
 ## Not done yet
 
-- A GitHub Actions workflow (`on: issues.opened`) to trigger runs automatically
-- Real isolation for repository code (container wrapper, tested)
+- Real isolation for repository code: a tested container wrapper applied everywhere repository
+  code runs (both profiles, benchmark grading), with its own home directory and git config
+- Pushing the fix branch somewhere that does not run the repository's `on: push` workflows with
+  secrets before review (a fork, for example)
+- Restrictive permissions for run records, and an option not to keep prompt and response text
+- Support for repositories that need git hooks (git-lfs)
+- Duplicate detection with useful recall at zero false positives, calibrated on more data
 - Benchmark cases in other languages and on larger repositories
+- A GitHub Actions workflow (`on: issues.opened`) to trigger runs automatically
 - A hosted GitHub App / webhook receiver (needs an always-on host)
 
 ## License
